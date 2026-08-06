@@ -272,21 +272,25 @@
   };
 
   RW._renderCommitPreview = function(){
-    const old = document.getElementById('rw-commitpreview'); if(old) old.remove();
-    if (!RW.selected.size) return;
-    const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
-    svg.id = 'rw-commitpreview';
-    svg.setAttribute('viewBox','0 0 '+RW.W+' '+RW.H);
-    svg.setAttribute('preserveAspectRatio','none');
-    svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:75;';
-    let inner = '';
-    for (const gid of RW.selected){
-      const path = RW._rawContour(gid);
-      if (!path || path.length<3) continue;
-      const pts = path.map(p=>(p.x*RW.W)+','+(p.y*RW.H)).join(' ');
-      const col = RW.regions.filter(r=>r.group===gid)[0]?.color || '#ccc';
-      inner += '<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="2.5" stroke-dasharray="6,3"/>';
-    }
+      const old = document.getElementById('rw-commitpreview'); if(old) old.remove();
+      if (!RW.selected.size) return;
+      const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.id = 'rw-commitpreview';
+      svg.setAttribute('viewBox','0 0 '+RW.W+' '+RW.H);
+      svg.setAttribute('preserveAspectRatio','none');
+      svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:75;';
+      // zoom-invariant stroke: 2.5 screen px → SVG units at current zoom
+      const container = document.getElementById('pdf-container');
+      const sw = container ? 2.5 * RW.W / container.clientWidth : 2.5;
+      const dash = sw * 2.4;
+      let inner = '';
+      for (const gid of RW.selected){
+        const path = RW._rawContour(gid);
+        if (!path || path.length<3) continue;
+        const pts = path.map(p=>(p.x*RW.W)+','+(p.y*RW.H)).join(' ');
+        const col = RW.regions.filter(r=>r.group===gid)[0]?.color || '#ccc';
+        inner += '<polyline points="'+pts+'" fill="none" stroke="'+col+'" stroke-width="'+sw.toFixed(2)+'" stroke-dasharray="'+dash.toFixed(1)+','+(dash*0.5).toFixed(1)+'"/>';
+      }
     svg.innerHTML = inner;
     document.getElementById('pdf-container').appendChild(svg);
   };
@@ -349,11 +353,22 @@
         svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
         svg.id='rw-cutline';
         svg.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:70;';
+        const ln=document.createElementNS('http://www.w3.org/2000/svg','line');
+        ln.setAttribute('stroke','red');
+        ln.setAttribute('stroke-width','2');
+        svg.appendChild(ln);
+        svg.__rwCutLine = ln;
         container.appendChild(svg);
       }
       const cr=container.getBoundingClientRect();
       const pc=(v,off,len)=>((v-off)/len*100)+'%';
-      svg.innerHTML='<line x1="'+pc(RW.cutStart.x,cr.x,cr.width)+'" y1="'+pc(RW.cutStart.y,cr.y,cr.height)+'" x2="'+pc(e.clientX,cr.x,cr.width)+'" y2="'+pc(e.clientY,cr.y,cr.height)+'" stroke="red" stroke-width="2"/>';
+      const ln=svg.__rwCutLine;
+      if (ln){
+        ln.setAttribute('x1',pc(RW.cutStart.x,cr.x,cr.width));
+        ln.setAttribute('y1',pc(RW.cutStart.y,cr.y,cr.height));
+        ln.setAttribute('x2',pc(e.clientX,cr.x,cr.width));
+        ln.setAttribute('y2',pc(e.clientY,cr.y,cr.height));
+      }
     }
   }, true);
 

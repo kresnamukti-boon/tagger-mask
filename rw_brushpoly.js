@@ -2,6 +2,7 @@
 // Load AFTER rw_undo.js (needs v2.3). Adds:
 //   N  — Poly2 tool: freeform vertices, dbl-click closes. Shift+N toggles block/open.
 //   J  — Brush tool: freehand stroke, Tab+scroll sizes radius. Shift+J toggles block/open.
+//   A  — Cycle maskAction: block → open → add (creates new regions from drawn shapes).
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v23) return 'need v2.3 first';
@@ -30,15 +31,24 @@
     RW._syncToolButtons();
   };
 
-  RW.setMaskAction = function(a){ RW.maskAction = a; RW._syncToolButtons(); };
+  RW._actionLabel = function(){ return RW.maskAction==='block'?'−':RW.maskAction==='open'?'+':'⊕'; };
+  RW._actionColor = function(){ return RW.maskAction==='block'?'orange':RW.maskAction==='open'?'deepskyblue':'limegreen'; };
+  RW._actionBg = function(){ return RW.maskAction==='block'?'rgba(255,160,60,0.18)':RW.maskAction==='open'?'rgba(60,180,255,0.18)':'rgba(50,205,50,0.18)'; };
+  RW.setMaskAction = function(a){ RW.maskAction = a; RW._syncToolButtons(); RW._syncRectBtn && RW._syncRectBtn(); };
 
   RW._syncToolButtons = function(){
+    const label = RW._actionLabel();
     const pb = document.getElementById('rw-poly2');
-    if (pb) pb.innerText = 'Poly2 ' + (RW.maskAction==='block'?'−':'+') + ' (N)';
+    if (pb) pb.innerText = 'Poly2 ' + label + ' (N)';
     if (pb) pb.style.background = RW.maskMode2==='poly2' ? 'rgba(255,160,60,0.4)' : '';
     const bb = document.getElementById('rw-brush');
-    if (bb) bb.innerText = 'Brush ' + (RW.maskAction==='block'?'−':'+') + ' (J)';
+    if (bb) bb.innerText = 'Brush ' + label + ' (J)';
     if (bb) bb.style.background = RW.maskMode2==='brush' ? 'rgba(255,160,60,0.4)' : '';
+    const ab = document.getElementById('rw-addmode');
+    if (ab){
+      ab.innerText = 'Add ' + label + ' (A)';
+      ab.style.background = RW.maskAction==='add' ? 'rgba(50,205,50,0.45)' : '';
+    }
   };
 
   RW._paintDisk = function(mx, my, r, val){
@@ -65,7 +75,7 @@
       RW._brushDown = true;
       RW._brushStroke = [[nx,ny]];
       RW._snapshot('brush');
-      const val = RW.maskAction==='block' ? 1 : 0;
+      const val = RW.maskAction==='add' ? 0 : (RW.maskAction==='block' ? 1 : 0);
       RW._paintDisk(nx*RW.W, ny*RW.H, RW.brushR, val);
     }
   }, true);
@@ -81,7 +91,7 @@
     if (RW.maskMode2==='brush'){
       if (RW._brushDown){
         RW._brushStroke.push([nx,ny]);
-        const val = RW.maskAction==='block' ? 1 : 0;
+        const val = RW.maskAction==='add' ? 0 : (RW.maskAction==='block' ? 1 : 0);
         RW._paintDisk(nx*RW.W, ny*RW.H, RW.brushR, val);
       }
       RW._renderBrushCursor(e.clientX, e.clientY);
@@ -94,7 +104,19 @@
     if (RW.maskMode2==='poly2') return;
     if (RW.maskMode2==='brush' && RW._brushDown){
       RW._brushDown = false;
+      if (RW.maskAction==='add'){
+        // Create perimeter ring around the cleared stroke
+        const r = RW.brushR;
+        for (const [snx,sny] of RW._brushStroke){
+          RW._paintDisk(snx*RW.W, sny*RW.H, r+2, 1);   // outer wall ring
+        }
+        for (const [snx,sny] of RW._brushStroke){
+          RW._paintDisk(snx*RW.W, sny*RW.H, r-1, 0);    // reinforce interior clear
+        }
+      }
+      const saveFloor = RW._areaFloor; if (RW.maskAction==='add') RW._areaFloor = 100;
       RW._relabel(); RW.renderList(); RW.renderOverlay();
+      RW._areaFloor = saveFloor;
       RW._renderCommitPreview();
     }
   }, true);
@@ -102,10 +124,15 @@
   ac.addEventListener('dblclick', function(e){
     if (RW.maskMode2!=='poly2') return;
     e.stopPropagation(); e.preventDefault();
-    if (RW._polyPtsN && RW._polyPtsN.length>=3){
+      if (RW._polyPtsN && RW._polyPtsN.length>=3){
       const mpts = RW._polyPtsN.map(([nx,ny])=>[nx*RW.W, ny*RW.H]);
-      if (RW.maskAction==='open'){
-        // open mode: only convert wall pixels to non-wall. no perimeter seal.
+      if (RW.maskAction==='add'){
+        // Clear interior first, then trace perimeter wall → creates new enclosed region
+        RW._paintPoly(mpts, 0);
+        RW._paintPolylineGap(mpts);
+      } else if (RW.maskAction==='open'){
+        // open mode: seal perimeter gaps, then convert interior walls to non-wall
+        RW._paintPolylineGap(mpts);
         const W=RW.W, H=RW.H, wall=RW.wall;
         let minY=H,maxY=0;
         for (const [x,y] of mpts){ if(y<minY)minY=y; if(y>maxY)maxY=y; }
@@ -125,7 +152,9 @@
       } else {
         RW._paintPoly(mpts, RW.maskAction==='block' ? 1 : 0);
       }
+      const saveFloor = RW._areaFloor; if (RW.maskAction==='add') RW._areaFloor = 100;
       RW._relabel(); RW.renderList(); RW.renderOverlay();
+      RW._areaFloor = saveFloor;
       RW._renderCommitPreview();
     }
     RW._polyPtsN=[];
@@ -165,15 +194,18 @@
     const [nx,ny]=RW._toNorm(cx,cy);
     const [px,py]=RW._toPx(nx,ny);
     const pr = RW._toPx(RW.brushR/RW.W, 0)[0];
-    const col = RW.maskAction==='block' ? 'orange' : 'deepskyblue';
+    const col = RW._actionColor();
     const sw = 1.2;
     let inner = '<circle cx="'+px+'" cy="'+py+'" r="'+pr+'" fill="none" stroke="'+col+'" stroke-width="'+sw+'" stroke-dasharray="8"/>';
     if (RW._brushDown && RW._brushStroke && RW._brushStroke.length){
-      const fill = RW.maskAction==='block' ? 'rgba(255,120,0,0.30)' : 'rgba(60,180,255,0.30)';
-      for (const [snx,sny] of RW._brushStroke){
+      const fill = RW.maskAction==='add' ? 'rgba(50,205,50,0.35)' : (RW.maskAction==='block' ? 'rgba(255,120,0,0.30)' : 'rgba(60,180,255,0.30)');
+      // Render as a single thick polyline instead of N individual circles
+      // (1 DOM node instead of potentially hundreds — huge perf win for long strokes)
+      const ptsStr = RW._brushStroke.map(([snx,sny])=>{
         const [spx,spy]=RW._toPx(snx,sny);
-        inner += '<circle cx="'+spx+'" cy="'+spy+'" r="'+pr+'" fill="'+fill+'" stroke="none"/>';
-      }
+        return spx+','+spy;
+      }).join(' ');
+      inner += '<polyline points="'+ptsStr+'" fill="none" stroke="'+fill+'" stroke-width="'+(pr*2)+'" stroke-linecap="round" stroke-linejoin="round"/>';
     }
     svg.innerHTML = inner;
   };
@@ -191,7 +223,7 @@
       if (RW.maskMode2==='poly2'){
         const svg = document.getElementById('rw-polyline');
         if (svg){
-          const col = RW.maskAction==='block' ? 'orange' : 'deepskyblue';
+          const col = RW._actionColor();
           svg.querySelectorAll('polyline,circle').forEach(el=>{
             el.setAttribute('stroke', col);
           });
@@ -206,9 +238,16 @@
     if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.ctrlKey||e.metaKey||e.altKey) return;
     const k = e.key.toLowerCase();
+    if (k==='a'){
+      e.preventDefault(); e.stopImmediatePropagation();
+      const cycle = {block:'open',open:'add',add:'block'};
+      const next = e.shiftKey ? {add:'open',open:'block',block:'add'}[RW.maskAction] : cycle[RW.maskAction];
+      RW.setMaskAction(next);
+      return;
+    }
     if (k==='n'){
       e.preventDefault(); e.stopImmediatePropagation();
-      if (e.shiftKey){ RW.setMaskAction(RW.maskAction==='block'?'open':'block'); return; }
+      if (e.shiftKey){ const next=RW.maskAction==='block'?'open':RW.maskAction==='open'?'add':'block'; RW.setMaskAction(next); return; }
       if (RW.maskMode==='rect'){ RW.maskMode=null; RW.__rectStartN=null; RW.__rectCurN=null;
         document.getElementById('annotation-canvas').style.cursor='';
         const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
@@ -217,7 +256,7 @@
     }
     if (k==='j'){
       e.preventDefault(); e.stopImmediatePropagation();
-      if (e.shiftKey){ RW.setMaskAction(RW.maskAction==='block'?'open':'block'); return; }
+      if (e.shiftKey){ const next=RW.maskAction==='block'?'open':RW.maskAction==='open'?'add':'block'; RW.setMaskAction(next); return; }
       if (RW.maskMode==='rect'){ RW.maskMode=null; RW.__rectStartN=null; RW.__rectCurN=null;
         document.getElementById('annotation-canvas').style.cursor='';
         const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
@@ -253,11 +292,19 @@
     bar.appendChild(b);
     return b;
   }
-  const pb = addBtn('rw-poly2','Freeform mask: click vertices, double-click closes. Shift+N toggles block/open.');
+  const pb = addBtn('rw-poly2','Freeform mask: click vertices, double-click closes. Shift+N toggles mode.');
   if (pb) pb.onclick=()=>RW.setMaskMode2(RW.maskMode2==='poly2'?null:'poly2');
-  const bb = addBtn('rw-brush','Freehand mask stroke. Tab+scroll resizes. Shift+J toggles block/open.');
+  const bb = addBtn('rw-brush','Freehand mask stroke. Tab+scroll resizes. Shift+J toggles mode.');
   if (bb) bb.onclick=()=>RW.setMaskMode2(RW.maskMode2==='brush'?null:'brush');
+  const ab = document.createElement('button');
+  ab.id='rw-addmode'; ab.title='Cycle mask action: block → open → add. A key toggles, Shift+A reverse.';
+  ab.style.cssText='font-size:11px;padding:2px 6px;';
+  ab.onclick=()=>{
+    const cycle = {block:'open',open:'add',add:'block'};
+    RW.setMaskAction(cycle[RW.maskAction]);
+  };
+  bar.appendChild(ab);
   RW._syncToolButtons();
 
-  return 'v2.6 up: Poly2 (N) + Brush (J)';
+  return 'v2.6 up: Poly2 (N) + Brush (J) + Add (A)';
 })()

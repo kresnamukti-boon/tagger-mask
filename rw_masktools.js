@@ -66,15 +66,22 @@
   };
 
   // Bresenham polyline — paints wall=1 only where pixels are currently wall=0
-  // (seals gaps in existing linework without cutting through mask regions)
+  // AND are NOT part of an existing included mask region.
+  // (seals gaps in linework without cutting through mask regions)
   RW._paintPolylineGap = function(pts){
-    const {W,H,wall} = RW;
+    const {W,H,wall,labels,regions} = RW;
     function line(x0,y0,x1,y1){
       const dx=Math.abs(x1-x0), sx=x0<x1?1:-1;
       const dy=-Math.abs(y1-y0), sy=y0<y1?1:-1;
       let err=dx+dy;
       while(true){
-        if (x0>=0&&x0<W&&y0>=0&&y0<H && wall[y0*W+x0]===0) wall[y0*W+x0]=1;
+        if (x0>=0&&x0<W&&y0>=0&&y0<H && wall[y0*W+x0]===0){
+          // skip if this pixel belongs to an included mask region
+          const l = labels ? labels[y0*W+x0] : -1;
+          if (!(l>=0 && regions && regions[l] && regions[l].included)){
+            wall[y0*W+x0]=1;
+          }
+        }
         if (x0===x1&&y0===y1) break;
         const e2=2*err;
         if (e2>=dy){ err+=dy; x0+=sx; }
@@ -170,20 +177,29 @@
     const s=RW.__rectStartN; RW.__rectStartN=null; RW.__rectCurN=null;
     const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
     const en=RW._toNorm(e.clientX,e.clientY);
-    const val = RW.maskAction==='block' ? 1 : 0;
-    if (RW.maskAction==='open'){
-      // open mode: only convert wall pixels to non-wall inside the rect.
-      // never create new wall barriers (no perimeter seal — that cuts through mask)
+    if (RW.maskAction==='add'){
+      // Add mode: clear interior first, then trace perimeter wall → new enclosed region
       const rx0=s[0]*RW.W, ry0=s[1]*RW.H, rx1=en[0]*RW.W, ry1=en[1]*RW.H;
+      const ix0=Math.max(0,Math.min(rx0,rx1)|0), ix1=Math.min(RW.W-1,Math.max(rx0,rx1)|0);
+      const iy0=Math.max(0,Math.min(ry0,ry1)|0), iy1=Math.min(RW.H-1,Math.max(ry0,ry1)|0);
+      for (let y=iy0;y<=iy1;y++) for (let x=ix0;x<=ix1;x++) RW.wall[y*RW.W+x]=0;
+      RW._paintPolylineGap([[rx0,ry0],[rx1,ry0],[rx1,ry1],[rx0,ry1]]);
+    } else if (RW.maskAction==='open'){
+      // open mode: seal perimeter gaps, then convert interior walls to non-wall
+      const rx0=s[0]*RW.W, ry0=s[1]*RW.H, rx1=en[0]*RW.W, ry1=en[1]*RW.H;
+      RW._paintPolylineGap([[rx0,ry0],[rx1,ry0],[rx1,ry1],[rx0,ry1]]);
       const xa=Math.max(0,Math.min(rx0,rx1)|0), xb=Math.min(RW.W-1,Math.max(rx0,rx1)|0);
       const ya=Math.max(0,Math.min(ry0,ry1)|0), yb=Math.min(RW.H-1,Math.max(ry0,ry1)|0);
       for (let y=ya;y<=yb;y++) for (let x=xa;x<=xb;x++) {
         if (RW.wall[y*RW.W+x]===1) RW.wall[y*RW.W+x]=0;
       }
     } else {
+      const val = RW.maskAction==='block' ? 1 : 0;
       RW._paintRect(s[0]*RW.W, s[1]*RW.H, en[0]*RW.W, en[1]*RW.H, val);
     }
+    const saveFloor = RW._areaFloor; if (RW.maskAction==='add') RW._areaFloor = 100;
     RW._relabel(); RW.renderList(); RW.renderOverlay();
+    RW._areaFloor = saveFloor;
     RW._renderCommitPreview();
   }, true);
 
@@ -205,7 +221,7 @@
     let x1=RW.__rectCurN ? RW.__rectCurN[0] : x0, y1=RW.__rectCurN ? RW.__rectCurN[1] : y0;
     const [ax,ay]=RW._toPx(Math.min(x0,x1),Math.min(y0,y1));
     const [bx,by]=RW._toPx(Math.max(x0,x1),Math.max(y0,y1));
-    const col = RW.maskAction==='block' ? 'orange' : 'deepskyblue';
+    const col = RW._actionColor ? RW._actionColor() : (RW.maskAction==='block' ? 'orange' : 'deepskyblue');
     svg.innerHTML='<rect x="'+ax+'" y="'+ay+'" width="'+(bx-ax)+'" height="'+(by-ay)+'" fill="rgba(255,160,60,0.10)" stroke="'+col+'" stroke-width="'+sw+'"/>';
   };
 
@@ -219,7 +235,7 @@
     if (e.key==='b'||e.key==='B'){
       if (RW.maskMode2){ RW.setMaskMode2(null); }
       e.preventDefault(); e.stopImmediatePropagation();
-      if (e.shiftKey){ RW.maskAction = RW.maskAction==='block' ? 'open' : 'block'; RW._syncRectBtn(); return; }
+      if (e.shiftKey){ const next=RW.maskAction==='block'?'open':RW.maskAction==='open'?'add':'block'; RW.maskAction=next; RW._syncRectBtn(); return; }
       RW.maskMode = RW.maskMode==='rect' ? null : 'rect';
       RW._syncRectBtn();
       const ac=document.getElementById('annotation-canvas');
@@ -239,14 +255,15 @@
   RW._syncRectBtn = function(){
     const b = document.getElementById('rw-rect');
     if (!b) return;
-    const sym = RW.maskAction==='block' ? '-' : '+';
+    const sym = RW.maskAction==='block' ? '-' : (RW.maskAction==='open' ? '+' : '⊕');
     b.innerText = 'Rect '+sym+' (B)';
-    b.style.background = RW.maskMode==='rect' ? 'rgba(255,160,60,0.4)' : '';
+    const bg = RW.maskAction==='add' ? 'rgba(50,205,50,0.4)' : 'rgba(255,160,60,0.4)';
+    b.style.background = RW.maskMode==='rect' ? bg : '';
   };
   const bar = (document.getElementById('rw-pick') || {}).parentNode;
   if (bar && !document.getElementById('rw-rect')){
     const b=document.createElement('button');
-    b.id='rw-rect'; b.title='Unified rect mask. Shift+B toggles block/open.';
+    b.id='rw-rect'; b.title='Unified rect mask. Shift+B cycles block→open→add.';
     b.style.cssText='font-size:11px;padding:2px 6px;';
     b.onclick=()=>{
       // cross-disarm: if any v2.6 tool is armed, kill it first

@@ -109,7 +109,7 @@
     const W=RW.W, H=RW.H;
     const val = RW.maskMode==='block' ? 1 : 0;
     if (RW.maskMode==='open'){
-      // open mode: only convert wall pixels to non-wall. no perimeter seal.
+      RW._paintPolylineGap([[s[0]*W, s[1]*H], [e_n[0]*W, s[1]*H], [e_n[0]*W, e_n[1]*H], [s[0]*W, e_n[1]*H]]);
       const xa=Math.max(0,Math.min(s[0]*W, e_n[0]*W)|0), xb=Math.min(W-1,Math.max(s[0]*W, e_n[0]*W)|0);
       const ya=Math.max(0,Math.min(s[1]*H, e_n[1]*H)|0), yb=Math.min(H-1,Math.max(s[1]*H, e_n[1]*H)|0);
       for (let y=ya;y<=yb;y++) for (let x=xa;x<=xb;x++) {
@@ -137,11 +137,18 @@
 
   // keep preview glued during pan/zoom: re-render on scroll + wheel
   const sc = document.getElementById('canvas-scroll-container');
+  RW.__scrollRaf = false;
   sc.addEventListener('scroll', function(){
     if (RW._previewV!==4) return;
     if (!RW.maskMode && !RW.maskMode2) return;
-    RW._renderPreview(null);
-    if (RW._renderPreview2) RW._renderPreview2(null);
+    if (RW.__scrollRaf) return;              // debounce: one rAF at a time
+    RW.__scrollRaf = true;
+    requestAnimationFrame(() => {
+      RW.__scrollRaf = false;
+      RW._renderPreview(null);
+      if (RW._renderPreview2) RW._renderPreview2(null);
+      if (RW._renderCommitPreview) RW._renderCommitPreview();
+    });
   }, {passive:true});
   // wheel = zoom (Ctrl+scroll) — re-render so stroke stays zoom-invariant
   ac.addEventListener('wheel', function(e){
@@ -151,6 +158,7 @@
     requestAnimationFrame(() => {
       RW._renderPreview(null);
       if (RW._renderPreview2) RW._renderPreview2(null);
+      if (RW._renderCommitPreview) RW._renderCommitPreview();
     });
   }, {passive:true});
   document.addEventListener('mouseup', function(){
