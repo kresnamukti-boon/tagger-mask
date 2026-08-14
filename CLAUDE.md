@@ -31,7 +31,7 @@ and the only verification is `node --check` (syntax-only — it can't validate a
 live page's DOM/globals).
 
 ```bash
-# After editing any rw_*.js or wf_helpers.js source module:
+# After editing any rw_*.js source module:
 bash build_loader.sh          # rebuilds console_loader.js (runs node --check on the result)
 bash build_loader_sam.sh      # rebuilds console_loader_sam.js (SAM-enabled variant; doesn't
                                # run node --check itself — run it manually after)
@@ -83,8 +83,6 @@ list) is:
     `RW._buildSnapPoints` again to invalidate its own dirty flag on the same schedule.
 11. **rw_sam.js** (v2-sam, SAM build only) — SAM3-via-Replicate box segmentation, talks to a
     local proxy on port 5001 (`sam3_proxy.py`, not in this repo).
-12. **wf_helpers.js** — intentionally independent of the `__RW` chain (no version-flag guard).
-    Page nav (`[`/`]`), tag-search focus (`/`), coverage heatmap (`H`).
 
 When adding a new module or reordering, replicate this pattern: check the previous module's
 version flag at the top, set your own flag, and only proceed if the check passes. When adding

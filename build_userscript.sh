@@ -32,7 +32,7 @@ cat > "$OUT" <<'HEADER'
   var SOURCE =
 HEADER
 
-for f in rw_install.js rw_masktools.js rw_stable.js rw_undo.js rw_commit.js wf_helpers.js; do
+for f in rw_install.js rw_masktools.js rw_stable.js rw_undo.js rw_commit.js; do
   # embed each module as a JS string chunk; join with newline separators (NOT '+'
   # string concatenation — adjacent IIFEs like })()("...") would be parsed as a call)
   python3 -c "import json; print(json.dumps(open('$f').read() + ';\n') + ' +')"
