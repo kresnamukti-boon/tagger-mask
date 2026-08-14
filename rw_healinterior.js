@@ -152,7 +152,12 @@
       actx.fillStyle = '#000';
       for (const a of annotationState.annotations){
         if (a._hidden || a.is_void) continue;
-        const pts = a.coordinates; if (!pts || pts.length<3) continue;
+        // Array.isArray, not just !pts.length — a bbox-type annotation stores
+        // coordinates as {x,y,width,height}, not a point array; that object
+        // has no .length at all, and `undefined < 3` is false in JS, so the
+        // old `pts.length<3` guard let it silently through to pts.forEach(),
+        // which doesn't exist on a plain object. Confirmed live.
+        const pts = a.coordinates; if (!Array.isArray(pts) || pts.length<3) continue;
         actx.beginPath();
         pts.forEach((p,idx)=>{ const X=p.x*W, Y=p.y*H; idx?actx.lineTo(X,Y):actx.moveTo(X,Y); });
         actx.closePath(); actx.fill();

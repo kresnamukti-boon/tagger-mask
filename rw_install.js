@@ -37,7 +37,14 @@
     const x2 = c2.getContext('2d');
     for (const a of annotationState.annotations){
       if (a._hidden || a.is_void) continue;
-      const pts = a.coordinates; if (!pts||!pts.length) continue;
+      // Array.isArray, not just !pts.length — a bbox-type annotation stores
+      // coordinates as {x,y,width,height}, not a point array. This specific
+      // check (!pts.length) happens to catch that case since `undefined`
+      // negates to true, but rw_healinterior.js/rw_textdetect.js used
+      // `pts.length<3` instead, which does NOT catch it (`undefined < 3` is
+      // false in JS) and crashed on .forEach — confirmed live. Using
+      // Array.isArray here too for real defense-in-depth, not just luck.
+      const pts = a.coordinates; if (!Array.isArray(pts) || !pts.length) continue;
       x2.fillStyle='#000';
       x2.beginPath();
       pts.forEach((p,i)=>{ const X=p.x*W, Y=p.y*H; i?x2.lineTo(X,Y):x2.moveTo(X,Y); });

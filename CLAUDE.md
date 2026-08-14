@@ -289,6 +289,18 @@ getting treated as wall, distorting region shapes" — the practical problem beh
 back to 2500 — this was the root cause of an earlier "Relabel All does nothing" bug. Both
 `rw_masktools.js#_relabel` and `rw_install.js#extract` must keep this exact check.
 
+### Hidden panel controls
+
+The **Relabel** button (`#rw-relabel-btn`), **Add ⊕** button (`#rw-addmode`), and the whole
+**Text? (density)** cluster (`#rw-textdetect-group`) are hidden (`style.display='none'`) at the
+end of `rw_textdetect.js` (loaded last, so all three already exist by then), per user request —
+not useful for their current work and were cluttering the panel. This is a **hide, not remove**:
+same convention `rw_brushpoly.js` already uses for its own legacy `poly` button. The underlying
+functionality is untouched — `RW.relabelAll()`, `RW.toggleTextOverlay()`, and the `A`-key/
+`Shift+B` add-mode toggle all still work exactly as before; only their panel buttons are
+invisible. If a future ask needs one of these back, restore visibility rather than rebuilding
+the feature — nothing was deleted.
+
 ## Constraints (do not violate)
 
 - **Console injection only.** No Tampermonkey/userscript path in active use — the userscript
