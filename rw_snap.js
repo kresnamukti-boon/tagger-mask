@@ -267,10 +267,15 @@
   };
 
   RW._buildSnapPoints = function(){
-    if (!RW.wall || !RW.W || !RW.H){ RW._snapPoints=[]; RW._snapDirty=false; return; }
+    if (!RW.wall || !RW.W || !RW.H){ RW._snapPoints=[]; RW._skeletonCandidates=[]; RW._snapDirty=false; return; }
     const thin = RW._buildThinMask();
     const {skel, pts} = RW._skeletonize(thin);
     const candidates = RW._classifySkeleton(skel, pts);
+    // Cached raw (unclustered) so other features can read local point density —
+    // _clusterPoints below deliberately erases that density (many points -> one),
+    // which is exactly what snapping wants but the opposite of what a
+    // density-based detector (e.g. rw_textdetect.js) needs.
+    RW._skeletonCandidates = candidates;
     const clustered = RW._clusterPoints(candidates, RW._snapMergeRadiusPx());
     const edgePts = (RW.labels && RW.regions) ? RW._buildEdgePoints() : [];
     RW._snapPoints = clustered.concat(edgePts);

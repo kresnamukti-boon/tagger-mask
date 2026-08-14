@@ -71,20 +71,37 @@ list) is:
    pushing onto `annotationState.annotations` and `editHistory`, mirroring the app's own
    `createPolygonPolylineAnnotation` mechanism exactly (see the file's header comment for the
    4-step mechanism). This is the only module that writes annotation state.
-7. **rw_brushpoly.js** (v2.6) — Poly2 (freeform vertex) and Brush (freehand stroke) mask tools.
+7. **rw_healinterior.js** (v3) — "Heal Interior?"/"Apply Heal" for the Pick-mode selection (see
+   below). Wraps `RW.toggleGroup` to keep its preview in sync when the selection changes.
+8. **rw_brushpoly.js** (v2.6) — Poly2 (freeform vertex) and Brush (freehand stroke) mask tools.
    Owns the `A` add-mode toggle and the `_actionLabel`/`_actionColor`/`_syncToolButtons` helpers.
-8. **rw_snap.js** (v2.7) — Poly2 vertex snapping (see below). Wraps `RW._relabel`/`RW.extract`
+9. **rw_snap.js** (v2.7) — Poly2 vertex snapping (see below). Wraps `RW._relabel`/`RW.extract`
    to invalidate its cache and wraps `RW._renderPreview` again to draw the snap-hit marker —
    third layer of wrapping on that function after `rw_stable.js`'s original and
    `rw_brushpoly.js`'s recolor wrap.
-9. **rw_sam.js** (v2-sam, SAM build only) — SAM3-via-Replicate box segmentation, talks to a
-   local proxy on port 5001 (`sam3_proxy.py`, not in this repo).
-10. **wf_helpers.js** — intentionally independent of the `__RW` chain (no version-flag guard).
+10. **rw_textdetect.js** (v2.9) — "Text? (density)" detection-only overlay (see below). Wraps
+    `RW._buildSnapPoints` again to invalidate its own dirty flag on the same schedule.
+11. **rw_sam.js** (v2-sam, SAM build only) — SAM3-via-Replicate box segmentation, talks to a
+    local proxy on port 5001 (`sam3_proxy.py`, not in this repo).
+12. **wf_helpers.js** — intentionally independent of the `__RW` chain (no version-flag guard).
     Page nav (`[`/`]`), tag-search focus (`/`), coverage heatmap (`H`).
 
 When adding a new module or reordering, replicate this pattern: check the previous module's
 version flag at the top, set your own flag, and only proceed if the check passes. When adding
 new instance state, put it on `RW` (or `RW._` prefixed for internals) rather than a new global.
+
+### Keybindings can shadow the app's own shortcuts
+
+Workbench keydown handlers are attached on `document`/`annotation-canvas` in the **capture
+phase** with `stopPropagation()`, so they run before — and block — the app's own keydown
+handlers for the same key. This is deliberate (it's how `RW.enabled`'s killswitch and mode
+switching work reliably), but it means picking a key already used by the app's own tool
+palette silently disables that app shortcut entirely while the workbench is loaded, with no
+error or warning. Confirmed example: the workbench's **K** (Cut mode) fully shadows the app's
+own **K = Magic Wand** tool. Before adding a new keybinding, check the app's built-in keymap
+(`README.md`'s "App built-in keymap" section — extracted from their JS, but verify live since
+it can drift, as the Magic Wand/Wrap tools weren't in it) for a collision, and if one exists,
+document it there rather than silently living with it.
 
 ### Coordinate systems
 
@@ -213,6 +230,41 @@ classification logic itself is broken — this was the actual root cause the one
 (verified live against a real annotation page via `opencli`, not just synthetic test data; see
 the `boon-tagger-opencli-testing` memory for that workflow).
 
+## Text/interior-noise detection & healing (`rw_textdetect.js`, `rw_healinterior.js`)
+
+Two shipped features (both in the main and SAM console loaders) address "text/dimension marks
+getting treated as wall, distorting region shapes" — the practical problem behind the old
+"Text exclusion" roadmap item. They solve different halves of it and don't depend on each other.
+
+- **`rw_textdetect.js`** — whole-page, detection-only. A "Text? (density)" panel toggle
+  highlights areas where `RW._skeletonCandidates` (reused from `rw_snap.js`, see below) cluster
+  more densely than real linework does — text glyphs are small, stroke-heavy shapes, so they
+  produce far more skeleton points per unit area. Tunable live via `cell`/`min` panel inputs.
+  **Never edits `RW.wall`** — purely a manual-review aid. Confirmed live: works well for real
+  text (including rotated text) on a page with no pre-existing annotations, but also flags
+  repeated line symbols (a fence/tick-mark pattern chained into one page-spanning false
+  positive) and, on a page with existing annotations, is dominated by annotation-interior
+  artifacts unless filtered out.
+- **`rw_healinterior.js`** — scoped to the Pick-mode **selection** (`RW.selected`), not the
+  whole page. A "Heal Interior?" panel button previews which wall pixels inside the selected
+  region(s) are safe to erase without merging the region into a neighbor (`RW._computeInteriorNoise`);
+  a separate "Apply Heal" button commits it (with an undo snapshot, like other mask edits). The
+  `hole≤` input tunes how big a non-included neighboring area can be before it's protected
+  rather than treated as negligible noise (deliberately separate from `RW._areaFloor` — that one
+  tunes what counts as a selectable candidate region, not what counts as noise).
+
+  **Read the file's own header comment in full before changing this logic.** It documents five
+  distinct failure modes found through live testing against real jobs, each requiring a
+  genuinely different kind of fix rather than a tuning tweak — a "one more patch" mentality
+  bit this feature repeatedly: component-veto too strict → fixed-window padding too narrow for
+  hatch-heavy pages → unbounded search wandering the whole page when a region has no nearby
+  neighbor → a real building floor plan merged into one label via a door-opening gap
+  (indistinguishable from noise by pure topology) → existing annotations' wall-knockout treated
+  as erasable noise. The throughline: this can only ever reason from wall/label topology, and
+  real drawings have cases where topology alone doesn't encode what a human would recognize by
+  looking at the content. If a sixth failure mode turns up, check whether it's actually a new
+  case or a regression of one of the five documented ones first.
+
 ## Wall overlay & relabel controls
 
 - **`W`** (or the **Walls (W)** button) cycles a 3-state diagnostic overlay on `#rw-wall-overlay`:
@@ -255,8 +307,6 @@ back to 2500 — this was the root cause of an earlier "Relabel All does nothing
 
 ## Roadmap (not yet built — do not assume these exist)
 
-- **Text exclusion** — marking text/dimension blocks so masks cover them (manual rect today;
-  auto heuristic proposed).
 - **Controller support** — a Gamepad API module mapping buttons to workbench functions.
 - **Training data export** — committed polygons → labeled mask PNGs + canvas captures
   (SA-1B-style dataset), intended to fine-tune SAM3 on Boon's own drawings (off-the-shelf SAM3
