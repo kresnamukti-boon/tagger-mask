@@ -144,7 +144,7 @@
       newGroupFor[id]=best;
     }
     RW.labels=labels; RW.nComp=nComp;
-    const areaFloor = RW._areaFloor || 2500;
+    const areaFloor = RW._areaFloor != null ? RW._areaFloor : 2500;
     RW.regions = sizes.map((s,id)=>{ const g=newGroupFor[id]>=0?newGroupFor[id]:id; return {id,size:s.size,included:s.size>=areaFloor,group:g,color:'hsl('+((g*67)%360)+',70%,55%)'}; });
   };
 
@@ -167,6 +167,9 @@
     if (RW.maskMode!=='rect' || !RW.__rectStartN) return;
     e.stopPropagation();
     RW.__rectCurN = RW._toNorm(e.clientX, e.clientY);
+    const en=RW.__rectCurN, st=RW.__rectStartN;
+    const px = Math.round(Math.abs(en[0]-st[0])*RW.W * Math.abs(en[1]-st[1])*RW.H);
+    RW._showAreaHint(px);
     // render via the shared preview path from v2.2
     RW._renderPreview2({x:e.clientX,y:e.clientY});
   }, true);
@@ -178,12 +181,23 @@
     const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
     const en=RW._toNorm(e.clientX,e.clientY);
     if (RW.maskAction==='add'){
-      // Add mode: clear interior first, then trace perimeter wall → new enclosed region
-      const rx0=s[0]*RW.W, ry0=s[1]*RW.H, rx1=en[0]*RW.W, ry1=en[1]*RW.H;
-      const ix0=Math.max(0,Math.min(rx0,rx1)|0), ix1=Math.min(RW.W-1,Math.max(rx0,rx1)|0);
-      const iy0=Math.max(0,Math.min(ry0,ry1)|0), iy1=Math.min(RW.H-1,Math.max(ry0,ry1)|0);
-      for (let y=iy0;y<=iy1;y++) for (let x=ix0;x<=ix1;x++) RW.wall[y*RW.W+x]=0;
-      RW._paintPolylineGap([[rx0,ry0],[rx1,ry0],[rx1,ry1],[rx0,ry1]]);
+      // Fill-then-hollow: paint full rect as wall, then shrink 2px and clear interior.
+      // Build skip mask for existing included-region pixels (bbox only, cheap).
+      const {W,H,labels,regions,wall} = RW;
+      const rx0=s[0]*W, ry0=s[1]*H, rx1=en[0]*W, ry1=en[1]*H;
+      const xa=Math.max(0,Math.min(rx0,rx1)|0), xb=Math.min(W-1,Math.max(rx0,rx1)|0);
+      const ya=Math.max(0,Math.min(ry0,ry1)|0), yb=Math.min(H-1,Math.max(ry0,ry1)|0);
+      const skip = new Uint8Array(W*H);
+      for (let y=ya;y<=yb;y++) for (let x=xa;x<=xb;x++){
+        const l=labels[y*W+x];
+        if (l>=0 && regions[l] && regions[l].included) skip[y*W+x]=1;
+      }
+      for (let y=ya;y<=yb;y++) for (let x=xa;x<=xb;x++)
+        if (!skip[y*W+x]) wall[y*W+x]=1;
+      const ixa=Math.min(xb, xa+2), ixb=Math.max(xa, xb-2);
+      const iya=Math.min(yb, ya+2), iyb=Math.max(ya, yb-2);
+      for (let y=iya;y<=iyb;y++) for (let x=ixa;x<=ixb;x++)
+        if (!skip[y*W+x]) wall[y*W+x]=0;
     } else if (RW.maskAction==='open'){
       // open mode: seal perimeter gaps, then convert interior walls to non-wall
       const rx0=s[0]*RW.W, ry0=s[1]*RW.H, rx1=en[0]*RW.W, ry1=en[1]*RW.H;
@@ -197,10 +211,18 @@
       const val = RW.maskAction==='block' ? 1 : 0;
       RW._paintRect(s[0]*RW.W, s[1]*RW.H, en[0]*RW.W, en[1]*RW.H, val);
     }
-    const saveFloor = RW._areaFloor; if (RW.maskAction==='add') RW._areaFloor = 100;
-    RW._relabel(); RW.renderList(); RW.renderOverlay();
-    RW._areaFloor = saveFloor;
+    RW._relabel();
+    if (RW.maskAction==='add'){
+      // Force-include the region at the center of the drawn rect (ignore areaFloor)
+      const cx = Math.round((s[0]+en[0])/2 * RW.W), cy = Math.round((s[1]+en[1])/2 * RW.H);
+      if (cx>=0 && cx<RW.W && cy>=0 && cy<RW.H){
+        const l = RW.labels[cy*RW.W + cx];
+        if (l>=0 && RW.regions[l]) RW.regions[l].included = true;
+      }
+    }
+    RW.renderList(); RW.renderOverlay();
     RW._renderCommitPreview();
+    RW._showAreaHint(null);
   }, true);
 
   ac.addEventListener('click', function(e){
@@ -276,6 +298,117 @@
     bar.appendChild(b);
   }
   RW._syncRectBtn();
+
+  /* ---------- live area hint ---------- */
+  RW._showAreaHint = function(px){
+    const el = document.getElementById('rw-commit-status');
+    if (!el) return;
+    const floor = RW._areaFloor != null ? RW._areaFloor : 2500;
+    if (px == null){ el.innerText = ''; return; }
+    const ok = px >= floor;
+    el.innerHTML = '<span style="color:'+(ok?'#4c4':'#c44')+'">area: '+px+' px '+(ok?'≥':'<')+' '+floor+'</span>';
+  };
+  RW._polyArea = function(ptsN){
+    // Shoelace formula on normalized polygon points
+    let a=0; const n=ptsN.length;
+    for (let i=0;i<n;i++){ const j=(i+1)%n; a+=ptsN[i][0]*ptsN[j][1]-ptsN[j][0]*ptsN[i][1]; }
+    return Math.round(Math.abs(a/2) * RW.W * RW.H);
+  };
+
+  /* ---------- relabel with configured size floor ---------- */
+  RW.relabelAll = function(){
+    RW._relabel();
+    RW.renderList(); RW.renderOverlay();
+    RW._renderCommitPreview();
+  };
+
+  /* ---------- Global area-floor input (affects ALL tools + re-extract) ---------- */
+  if (bar && !document.getElementById('rw-relabel-inp')){
+    const inp = document.createElement('input');
+    inp.id = 'rw-relabel-inp';
+    inp.type = 'number';
+    inp.value = RW._areaFloor || 2500;
+    inp.title = 'Min region pixels (global). Affects all mask tools, Re-extract and Relabel.';
+    inp.style.cssText = 'font-size:11px;padding:1px 4px;width:52px;text-align:right;';
+    inp.onchange = function(){
+      const v = parseInt(this.value, 10);
+      RW._areaFloor = isNaN(v) ? 2500 : Math.max(1, v);
+    };
+    bar.appendChild(inp);
+    const rb = document.createElement('button');
+    rb.id = 'rw-relabel-btn';
+    rb.title = 'Relabel using the current pixel threshold.';
+    rb.style.cssText = 'font-size:11px;padding:2px 6px;';
+    rb.innerText = 'Relabel';
+    rb.onclick = ()=>RW.relabelAll();
+    bar.appendChild(rb);
+  }
+
+  /* ---------- wall overlay toggle (3-state: off → walls → floodable → off) ---------- */
+  RW.wallOverlayState = 0; // 0=off, 1=walls(red), 2=floodable(cyan)
+  RW.toggleWallOverlay = function(){
+    const existing = document.getElementById('rw-wall-overlay');
+    if (existing) existing.remove();
+    RW.wallOverlayState = (RW.wallOverlayState + 1) % 3;
+    if (RW.wallOverlayState === 0) return;
+    const {W,H,wall} = RW;
+    const ov = document.createElement('canvas');
+    ov.id = 'rw-wall-overlay';
+    ov.width = W; ov.height = H;
+    ov.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:44;opacity:0.7;image-rendering:pixelated;';
+    const ctx = ov.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    if (RW.wallOverlayState === 1){
+      // Red = wall pixels
+      for (let i = 0; i < W*H; i++) {
+        if (wall[i] === 1) { img.data[i*4]=255; img.data[i*4+1]=60; img.data[i*4+2]=60; img.data[i*4+3]=220; }
+      }
+    } else {
+      // Cyan = enclosed white space (not reachable from border → would become regions)
+      // Match _relabel() behavior: existing included region pixels block the flood
+      const seen = new Uint8Array(W*H);
+      const q = [];
+      for (let x=0;x<W;x++){ q.push(x,(H-1)*W+x); }
+      for (let y=0;y<H;y++){ q.push(y*W,y*W+W-1); }
+      while(q.length){
+        const i = q.pop();
+        if (seen[i]||wall[i]) continue;
+        const ol = RW.labels[i];
+        if (ol>=0 && RW.regions[ol] && RW.regions[ol].included) continue;
+        seen[i]=1;
+        const x=i%W, y=(i/W)|0;
+        if(x>0)q.push(i-1); if(x<W-1)q.push(i+1);
+        if(y>0)q.push(i-W); if(y<H-1)q.push(i+W);
+      }
+      for (let i = 0; i < W*H; i++) {
+        if (!wall[i] && !seen[i]) { img.data[i*4]=60; img.data[i*4+1]=220; img.data[i*4+2]=255; img.data[i*4+3]=200; }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    document.getElementById('pdf-container').appendChild(ov);
+  };
+
+  /* ---------- W key: toggle wall overlay ---------- */
+  window.addEventListener('keydown', function(e){
+    const t = e.target;
+    if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
+    if (e.ctrlKey||e.metaKey||e.altKey) return;
+    if (e.key==='w'||e.key==='W'){
+      e.preventDefault(); e.stopImmediatePropagation();
+      RW.toggleWallOverlay();
+    }
+  }, true);
+
+  /* ---------- Walls panel button ---------- */
+  if (bar && !document.getElementById('rw-walls')){
+    const wb = document.createElement('button');
+    wb.id = 'rw-walls';
+    wb.title = 'Toggle wall overlay (W). Shows wall=1 pixels in red.';
+    wb.style.cssText = 'font-size:11px;padding:2px 6px;';
+    wb.innerText = 'Walls (W)';
+    wb.onclick = ()=>RW.toggleWallOverlay();
+    bar.appendChild(wb);
+  }
 
   return 'v2.1r unified rect up: B=rect (Shift+B toggles block/open), pan-stable';
 })()

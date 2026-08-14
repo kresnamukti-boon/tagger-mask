@@ -18,7 +18,7 @@ echo '/* Boon Region Workbench + SAM 2.1 — console loader.
 ' > console_loader_sam.js
 
 # modules in load order — rw_sam replaces the boot
-for f in rw_panelux.js rw_install.js rw_masktools.js rw_stable.js rw_undo.js rw_commit.js rw_brushpoly.js rw_sam.js wf_helpers.js; do
+for f in rw_panelux.js rw_install.js rw_masktools.js rw_stable.js rw_undo.js rw_commit.js rw_brushpoly.js rw_snap.js rw_sam.js wf_helpers.js; do
   echo -e "\n// ===== $f =====\n" >> console_loader_sam.js
   cat "$f" >> console_loader_sam.js
   echo ";" >> console_loader_sam.js

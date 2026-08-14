@@ -50,7 +50,8 @@
         const [px,py]=RW._toPx(nx,ny); return px+','+py;
       });
       if (cursorClient){
-        const [cnx,cny]=RW._toNorm(cursorClient.x,cursorClient.y);
+        let [cnx,cny]=RW._toNorm(cursorClient.x,cursorClient.y);
+        if (RW.maskMode2==='poly2' && RW._trySnap){ const s=RW._trySnap(cnx,cny); cnx=s[0]; cny=s[1]; }
         const [px,py]=RW._toPx(cnx,cny);
         pts.push(px+','+py);
       }

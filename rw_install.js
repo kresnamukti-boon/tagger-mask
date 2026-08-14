@@ -17,7 +17,7 @@
       // clamp region size threshold proportionally
       RW._areaFloor = Math.round(2500 * (W*H) / (2592*1728));
     }
-    const areaFloor = RW._areaFloor || 2500;
+    const areaFloor = RW._areaFloor != null ? RW._areaFloor : 2500;
     // ... rest of extraction
     const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
     const ctx = cv.getContext('2d');
