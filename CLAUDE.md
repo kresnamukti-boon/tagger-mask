@@ -251,17 +251,33 @@ getting treated as wall, distorting region shapes" — the practical problem beh
   rather than treated as negligible noise (deliberately separate from `RW._areaFloor` — that one
   tunes what counts as a selectable candidate region, not what counts as noise).
 
-  **Read the file's own header comment in full before changing this logic.** It documents five
+  **Read the file's own header comment in full before changing this logic.** It documents six
   distinct failure modes found through live testing against real jobs, each requiring a
   genuinely different kind of fix rather than a tuning tweak — a "one more patch" mentality
   bit this feature repeatedly: component-veto too strict → fixed-window padding too narrow for
   hatch-heavy pages → unbounded search wandering the whole page when a region has no nearby
   neighbor → a real building floor plan merged into one label via a door-opening gap
   (indistinguishable from noise by pure topology) → existing annotations' wall-knockout treated
-  as erasable noise. The throughline: this can only ever reason from wall/label topology, and
-  real drawings have cases where topology alone doesn't encode what a human would recognize by
-  looking at the content. If a sixth failure mode turns up, check whether it's actually a new
-  case or a regression of one of the five documented ones first.
+  as erasable noise → a thick drawn boundary line partially hollowed out through its middle
+  (fixed via `RW._healBarrierMargin`, a bounded BFS margin around the "unsafe shell" of
+  reachable wall touching something foreign). The throughline: this can only ever reason from
+  wall/label topology, and real drawings have cases where topology alone doesn't encode what a
+  human would recognize by looking at the content. If a seventh failure mode turns up, check
+  whether it's actually new or a regression of one of the six documented ones first.
+
+  **`RW._healBarrierMargin` protects only from one side, not both** — verified with a synthetic
+  test after shipping. A region's own boundary line always has the region's own interior on one
+  face, and that face never registers as "unsafe" (crossing into your own open space isn't
+  foreign), so the margin-expansion BFS only ever grows inward from the line's single *outer*
+  face (the one touching a different region/exterior/annotation). A 16px-thick synthetic barrier
+  needed `RW._healBarrierMargin` set to ~16 (the full thickness) to be fully protected — at 10
+  (~2/3 of the thickness) roughly a quarter of it was still erodable. The panel's `barrier≥`
+  tooltip and the file's header comment both used to claim "protects up to 2x the margin, since
+  both sides meet in the middle" — that's only true when *neither* face of the wall segment is
+  the target region's own interior, which is the unusual case, not the norm. Set `barrier≥` to
+  the visible line's full pixel thickness, not half of it. Genuinely deep interior noise (far
+  from any real boundary) is unaffected by this and is still correctly flagged at any margin
+  setting — confirmed in the same test.
 
 ## Wall overlay & relabel controls
 
