@@ -13,7 +13,7 @@
   RW._textDirty = true;
   RW._textCandidates = [];
 
-  // Builds a mask of annotation interiors, used to exclude those pixels from the scan.
+  // Mask of annotation interiors.
   RW._buildAnnotationMask = function(){
     const {W,H} = RW;
     const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
@@ -21,7 +21,6 @@
     ctx.fillStyle = '#000';
     for (const a of (typeof annotationState!=='undefined' ? annotationState.annotations : [])){
       if (a._hidden || a.is_void) continue;
-      // Skip bbox-type annotations (no point array).
       const pts = a.coordinates; if (!Array.isArray(pts) || pts.length<3) continue;
       ctx.beginPath();
       pts.forEach((p,i)=>{ const X=p.x*W, Y=p.y*H; i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); });
@@ -35,7 +34,7 @@
 
   /* ---------- grid-bucket candidate density, then connect hot cells ---------- */
   RW._buildTextCandidates = function(){
-    if (RW._snapDirty) RW._buildSnapPoints(); // refreshes RW._skeletonCandidates
+    if (RW._snapDirty) RW._buildSnapPoints();
     const annMask = RW._buildAnnotationMask();
     const pts = (RW._skeletonCandidates || []).filter(p => !annMask[p.y*RW.W + p.x]);
     const cell = RW._textCellPx;
@@ -111,8 +110,6 @@
     if (status) status.innerText = RW._textCandidates.length + ' candidates';
   };
 
-  // piggyback on RW._snapDirty (already wired to RW._relabel/RW.extract)
-  // instead of adding a second wrapper layer.
   RW._textDirty = true;
   const origBuildSnapPoints = RW._buildSnapPoints;
   RW._buildSnapPoints = function(){ origBuildSnapPoints.apply(RW, arguments); RW._textDirty = true; };
@@ -120,7 +117,6 @@
   /* ---------- panel controls ---------- */
   const bar = (document.getElementById('rw-pick') || {}).parentNode;
   if (bar && !document.getElementById('rw-textdetect')){
-    // wrapper lets the whole cluster be hidden as one unit (see below).
     const group = document.createElement('span');
     group.id = 'rw-textdetect-group';
 
@@ -170,9 +166,6 @@
     bar.appendChild(group);
   }
 
-  /* ---------- hide clutter (per user request): hide, don't remove — same
-     convention as rw_brushpoly.js's legacy 'poly' button. Done here since
-     Relabel/Add live in earlier-loaded files. ---------- */
   ['rw-relabel-btn', 'rw-addmode', 'rw-textdetect-group'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';

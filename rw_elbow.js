@@ -1,26 +1,19 @@
 // RW v3.2 — Elbow fitting: drag a box (or click points + double-click to
-// close a tighter polygon region) around a pipe fitting and trace the REAL
-// linework inside it into a polygon (not a shape inferred from where you
-// dragged). Color-pick + tolerance is the primary control over what counts
-// as ink; the single largest connected piece inside the box/region is
+// close a tighter polygon region) around a pipe fitting and trace the real
+// linework inside it into a polygon. Color-pick + tolerance control what
+// counts as ink; the single largest connected piece inside the box/region is
 // selected, traced pixel-exactly (RW._traceGridBoundary), then diagonal/
-// curved staircase runs are collapsed into clean chords via the same
-// Douglas-Peucker simplifier region commits use (RW._simplifyRing).
+// curved staircase runs are collapsed via RW._simplifyRing.
 //
-// Full design history (rejected approaches, live-found bugs, why fuse/hug/
-// shrink were removed) lives in CLAUDE.md — this file only carries the
-// "why" that's load-bearing for the code itself.
+// Full design history: CLAUDE.md.
 //
 // Load LAST (after rw_panelsections.js, needs v31). Depends on:
-//   - RW.wall / RW.extract (rw_install.js) — fallback linework source.
-//   - RW._buildAnnotationMask (rw_textdetect.js) — excludes already-committed
-//     annotations from the detection source.
-//   - RW._traceGridBoundary, RW._dpOpen/_simplifyRing/_bisectRingToTargetPts
-//     (rw_commit.js) — exact tracing + Douglas-Peucker collapsing.
-//   - RW._createPendingAnnotation, RW._forceRender, RW._commitStatus (rw_commit.js).
+//   - RW.wall / RW.extract (rw_install.js).
+//   - RW._buildAnnotationMask (rw_textdetect.js).
+//   - RW._traceGridBoundary, RW._dpOpen/_simplifyRing/_bisectRingToTargetPts,
+//     RW._createPendingAnnotation, RW._forceRender, RW._commitStatus (rw_commit.js).
 //   - RW._toNorm/_toPx/_mkSvg (rw_stable.js).
-//   - RW.panelSection (rw_panelsections.js) — optional; falls back to the
-//     legacy #rw-pick-parentNode bar-append idiom if absent.
+//   - RW.panelSection (rw_panelsections.js) — optional.
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v31) return 'need v3.1 (rw_wallspan.js) first';
@@ -31,38 +24,33 @@
 
   /* ---------- state ---------- */
   RW.elbowMode      = false;
-  RW._elbowBoxN     = null;   // detection box {x0,y0,x1,y1}, normalized, min/max-ordered — always set (even for a region, it's the region's own bbox)
-  RW._elbowRegionN  = null;   // committed polygon region, normalized [[x,y],...], or null (rectangle-only detection)
-  RW._elbowRegionWip = null;  // in-progress (not yet double-clicked closed) polygon vertices, normalized [[x,y],...]
-  RW._elbowPoly     = null;   // detected polygon, normalized [{x,y}], or null — one shape (the largest qualifying piece)
-  RW._elbowRaster   = null;   // {localW,localH,pad,scale,gx0,gy0, src,selected} — for the Px debug overlay
+  RW._elbowBoxN     = null;   // detection box {x0,y0,x1,y1}, normalized, min/max-ordered
+  RW._elbowRegionN  = null;   // committed polygon region, normalized [[x,y],...], or null
+  RW._elbowRegionWip = null;  // in-progress polygon vertices, normalized [[x,y],...]
+  RW._elbowPoly     = null;   // detected polygon, normalized [{x,y}], or null
+  RW._elbowRaster   = null;   // {localW,localH,pad,scale,gx0,gy0, src,selected}
   RW._elbowMeta     = null;   // {totalComps,candidateComps,keptPx,srcPx,coverage,source,capFallback}
-  // Tunables, mask-px, defaults per user preference (not the resolution-scaled formula).
   RW._elbowMinArea  = 1;
-  RW._elbowSubAnn   = true;   // subtract already-committed annotations from the detection source
-  RW._elbowRes      = 100;    // sample the box at this many x the current mask resolution (RASTER_BUDGET still caps a large box)
-  RW._elbowTargetPts = 24;    // 0 = auto; >0 = bisect eps to hit this many output vertices
-  RW._elbowPxState  = 0;      // 0 off, 1 source (thresholded+clipped), 2 selected (the piece that gets traced/committed)
-  RW._elbowPicking     = false; // one-shot "next click samples a color" mode, armed by the Pick Color button
-  RW._elbowTargetColor = null;  // {r,g,b} once picked — replaces the darkness threshold when set
-  RW._elbowColorTol    = 100;   // Euclidean RGB distance tolerance, used when RW._elbowTargetColor is set
-  RW._elbowDragHandle  = null;  // {type:'box', anchor:[nx,ny]} or {type:'region', index} while dragging an existing corner/vertex
+  RW._elbowSubAnn   = true;
+  RW._elbowRes      = 100;
+  RW._elbowTargetPts = 24;    // 0 = auto
+  RW._elbowPxState  = 0;      // 0 off, 1 source, 2 selected
+  RW._elbowPicking     = false;
+  RW._elbowTargetColor = null;  // {r,g,b} once picked
+  RW._elbowColorTol    = 100;
+  RW._elbowDragHandle  = null;  // {type:'box', anchor:[nx,ny]} or {type:'region', index}
 
   let downClient  = null;   // client {x,y} at mousedown, for the click-vs-drag threshold
   let dragStartN  = null;   // normalized start corner of the in-progress box drag
   let dragging    = false;
   let elbowRerunTimer = null;
-  // Shared 250ms-debounced re-detect, used by both the panel's tunable
-  // inputs and handle-dragging below, so dragging doesn't re-run the full
-  // raster/trace pipeline on every mousemove frame.
+  // 250ms-debounced re-detect, shared by panel tunables and handle-dragging.
   function scheduleElbowRerun(){
     clearTimeout(elbowRerunTimer);
     elbowRerunTimer = setTimeout(() => { if (RW._elbowBoxN) RW._runElbowDetect(); }, 250);
   }
 
-  // Hit-tests an existing box corner or region vertex against a client
-  // point, for click-and-drag editing. Container-relative px, matching
-  // RW._toPx's own coordinate space.
+  // Hit-tests an existing box corner or region vertex against a client point. Container-relative px.
   function hitTestElbowHandle(clientX, clientY){
     const cr = document.getElementById('pdf-container').getBoundingClientRect();
     const mx = clientX - cr.x, my = clientY - cr.y;
@@ -135,12 +123,7 @@
     return Math.abs(a)/2;
   }
 
-  // Segment-intersection test (orientation-based) — used only to check a
-  // Douglas-Peucker-capped grid-boundary trace for a genuine self-crossing.
-  // RW._traceGridBoundary's raw output can be a WEAKLY simple ring (a pinch
-  // point revisits one corner — harmless on its own), and DP could in
-  // principle cut across the pinch into a true crossing. Adjacent edges
-  // (sharing a ring index, including the wraparound pair) are skipped.
+  // Segment-intersection test (orientation-based).
   function segmentsIntersect(p1,p2,p3,p4){
     function orient(a,b,c){ return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]); }
     function onSeg(a,b,c){
@@ -170,9 +153,7 @@
     return true;
   }
 
-  // Pixel color-match decision, extracted so it's directly Node-testable
-  // without a real canvas. No color picked -> the flat darkness threshold
-  // RW.extract also uses; once picked, this REPLACES the darkness test.
+  // Pixel color-match decision. No color picked -> flat darkness threshold; once picked, replaces it.
   RW._elbowColorMatch = function(r, g, b){
     const tc = RW._elbowTargetColor;
     if (!tc) return Math.min(r,g,b) < 200;
@@ -181,16 +162,12 @@
     return Math.sqrt(dr*dr+dg*dg+db*db) < tol;
   };
 
-  // width -> {minArea} seed formula, so the panel's `width` input can stay a
-  // one-shot write (see its oninput handler below) rather than a standing
-  // recompute rule.
+  // width -> {minArea} seed formula.
   RW._elbowSeedFromWidth = function(width){
     return { minArea: Math.max(1, Math.round(2.5 * width * width)) };
   };
 
-  // Even-odd scanline fill of a polygon (given in LOCAL raster px already)
-  // into a fresh mask — a from-scratch reimplementation rather than reusing
-  // RW._paintPoly (rw_masktools.js), which is hardcoded to RW.wall/RW.W/RW.H.
+  // Even-odd scanline fill of a polygon (local raster px) into a fresh mask.
   function rasterizePolyLocal(localPts, w, h){
     const mask = new Uint8Array(w*h);
     let minY=Infinity, maxY=-Infinity;
@@ -211,14 +188,9 @@
     return mask;
   }
 
-  /* ---------- raster acquisition ----------
-     Two sources, tried in order. Kept separate from the pure pixel pipeline
-     below (RW._elbowProcessRaster) so the Node test suite keeps injecting a
-     synthetic raster directly, while the real DOM path stays exercised live. */
+  /* ---------- raster acquisition: two sources, tried in order ---------- */
 
-  // Eyedropper: sample #pdf-canvas's actual pixel color at a normalized page
-  // point. Only meaningful against the real canvas — RW.wall has already
-  // thrown color information away by the time it's a binary mask.
+  // Eyedropper: sample #pdf-canvas's pixel color at a normalized page point.
   RW._elbowSampleColorAt = function(nx, ny){
     try {
       const src = document.getElementById('pdf-canvas');
@@ -237,11 +209,9 @@
     }
   };
 
-  // Primary: sample #pdf-canvas directly at `res` x the current mask
-  // resolution — sidesteps RW.extract's page-wide width cap so a small box
-  // genuinely benefits from more source detail. Returns null (falls through
-  // to the RW.wall crop) if the canvas is unavailable, throws, or the
-  // sampled region comes back entirely blank.
+  // Sample #pdf-canvas directly at `res` x the current mask resolution.
+  // Returns null (falls through to the RW.wall crop) if the canvas is
+  // unavailable, throws, or the sampled region comes back entirely blank.
   RW._elbowAcquireRaster = function(geom){
     try {
       const src = document.getElementById('pdf-canvas');
@@ -250,17 +220,11 @@
       cv.width = geom.localW; cv.height = geom.localH;
       const ctx = cv.getContext('2d');
       if (!ctx) return null;
-      // Fill white first: a fresh canvas reads back (0,0,0,0) wherever
-      // nothing is drawn, and the darkness threshold would mark that as
-      // wall — the pad margin needs to read as genuinely empty.
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, geom.localW, geom.localH);
       const dw = geom.rawW*geom.scale, dh = geom.rawH*geom.scale;
       // geom.* are RW.W-space; pdf-canvas's native backing store can be a
-      // larger, different resolution when RW.extract's width cap kicked in
-      // — scale through nativeScale so drawImage samples the right region
-      // (a real bug, found live: an un-scaled crop silently sampled the
-      // wrong sub-region on a page where the cap had triggered).
+      // different resolution — scale through nativeScale.
       const nativeScale = src.width / RW.W;
       const sgx0 = geom.gx0*nativeScale, sgy0 = geom.gy0*nativeScale;
       const srawW = geom.rawW*nativeScale, srawH = geom.rawH*nativeScale;
@@ -271,7 +235,7 @@
       for (let i=0;i<data.length;i++){
         if (RW._elbowColorMatch(img[i*4], img[i*4+1], img[i*4+2])){ data[i]=1; srcPx++; }
       }
-      if (!srcPx) return null; // blank crop -> fall back rather than report a false empty box
+      if (!srcPx) return null;
       if (RW._elbowSubAnn && typeof annotationState !== 'undefined'){
         const acv = document.createElement('canvas');
         acv.width = geom.localW; acv.height = geom.localH;
@@ -294,15 +258,12 @@
       return { data, localW:geom.localW, localH:geom.localH, pad:geom.pad, scale:geom.scale,
         gx0:geom.gx0, gy0:geom.gy0, source:'canvas' };
     } catch (e){
-      return null; // e.g. a tainted canvas
+      return null;
     }
   };
 
-  // Fallback: crop the existing page-wide RW.wall mask. Loses anything only
-  // visible in RW.wall and not on the real canvas but never hard-fails.
-  // Fills each source pixel's full scale x scale destination footprint
-  // (not just a single rounded point) so upsampling (`scale`>1) doesn't
-  // leave a sparse, gap-riddled pattern.
+  // Fallback: crop the existing page-wide RW.wall mask, filling each source
+  // pixel's full scale x scale destination footprint.
   function acquireFromWall(geom){
     if (!RW.wall) RW.extract();
     const ann = RW._elbowSubAnn && RW._buildAnnotationMask ? RW._buildAnnotationMask() : null;
@@ -335,15 +296,11 @@
   }
 
   /* ---------- pure pixel pipeline ----------
-     A function of a raster + tunables only — no DOM, directly Node-testable.
-     Returns {poly, stages, meta} or {error}. */
+     Function of a raster + tunables only. Returns {poly, stages, meta} or {error}. */
   RW._elbowProcessRaster = function(raster, opts){
     const { localW, localH } = raster;
     let src = raster.data;
-    // Clip to the region polygon if one is active, otherwise the box's own
-    // interior (pad is just working room for the trace/coordinate math near
-    // the raster edge — nothing dilates past this clip once applied, since
-    // there's no dilation step anymore).
+    // Clip to the region polygon if active, otherwise the box interior.
     let clipMask;
     if (opts.regionLocalPts){
       clipMask = rasterizePolyLocal(opts.regionLocalPts, localW, localH);
@@ -366,41 +323,29 @@
     const minAreaLocal = Math.max(1, Math.round(opts.minArea * raster.scale * raster.scale));
     const cx = localW/2, cy = localH/2;
 
-    // Label 8-connected components on the thresholded, clipped source
-    // directly — no dilation/bridging. Color-pick + `tol` is the primary
-    // control over what counts as ink; a genuinely separate piece just
-    // isn't included rather than being forced together.
     const { labels, comps } = labelComponents(src, localW, localH, cx, cy);
     if (!comps.length) return { error: 'no connected shape found inside the box — try picking a color, or raising "tol"' };
     const candidates = comps.filter(c => c.size >= minAreaLocal);
     if (!candidates.length){
       return { error: 'only noise-sized pieces found inside the box — lower "min px"' };
     }
-    // Pick the component with the MOST raw pixels.
     candidates.sort((a,b) => b.size - a.size);
     const keep = candidates[0];
 
     const selected = new Uint8Array(localW*localH);
     for (let i=0;i<selected.length;i++) if (labels[i]===keep.id) selected[i]=1;
 
-    // Exact rectilinear trace — the only tracer.
     let traced = RW._traceGridBoundary(selected, { W:localW, H:localH });
     if (!traced) return { error: 'trace failed — try adjusting the box, the color, or "tol"' };
     const rawAreaPx = shoelaceAreaPx(traced, localW, localH);
     if (rawAreaPx < 4) return { error: 'traced shape is too small (likely noise) — try a bigger box or raise "min px"' };
 
-    // Diagonal collapsing: Douglas-Peucker (RW._simplifyRing /
-    // RW._bisectRingToTargetPts, rw_commit.js) on the exact trace's raw
-    // vertices — a small fixed eps by default, or bisected to a `pts` target.
     let capFallback = false;
     const targetPts = opts.targetPts != null && opts.targetPts > 0 ? Math.max(5, Math.round(opts.targetPts)) : 0;
     const ring = traced.map(p => [p.x*localW, p.y*localH]);
     const simplifiedRing = targetPts
       ? RW._bisectRingToTargetPts(ring, targetPts, null)
       : RW._simplifyRing(ring, 0.8, null);
-    // The raw trace can be only WEAKLY simple (a pinch point) — DP over a
-    // pinch could in principle cut across it into a true self-intersection.
-    // Fall back to the full uncollapsed trace rather than ship a bad polygon.
     if (isSimplePolygon(simplifiedRing)){
       traced = simplifiedRing.map(([x,y]) => ({ x:+(x/localW).toFixed(6), y:+(y/localH).toFixed(6) }));
     } else {
@@ -408,7 +353,6 @@
     }
     if (traced.length < 3) return { error: 'traced shape has too few points' };
 
-    // Map local-normalized -> global mask-px -> page-normalized.
     const poly = traced.map(p => ({
       x: +((((p.x*localW) - raster.pad)/raster.scale + raster.gx0)/RW.W).toFixed(6),
       y: +((((p.y*localH) - raster.pad)/raster.scale + raster.gy0)/RW.H).toFixed(6),
@@ -435,9 +379,6 @@
     const rawW = gx1-gx0, rawH = gy1-gy0;
     if (rawW < 4 || rawH < 4) return { error: "that's a click, not a box — drag out a bigger area around the fitting" };
 
-    // Budget-scale-cap: scale = min(res, sqrt(budget/area)) — bounds a
-    // pathologically large box while letting `res` genuinely upscale a
-    // normal-sized one.
     const RASTER_BUDGET = 1_500_000;
     const res = RW._elbowRes != null ? RW._elbowRes : 3;
     const scale = Math.min(res, Math.sqrt(RASTER_BUDGET / Math.max(1, rawW*rawH)));
@@ -464,19 +405,13 @@
 
     const polyAreaPx = shoelaceAreaPx(result.poly, W, H);
     const boxAreaPx = rawW*rawH;
-    // Coverage against the REGION's own area when one is active, not its
-    // (larger) bounding box's — otherwise a tight region inside a much
-    // looser bbox would read as artificially low coverage.
     result.meta.coverage = regionAreaPx != null
       ? (regionAreaPx>0 ? polyAreaPx/regionAreaPx : 0)
       : (boxAreaPx>0 ? polyAreaPx/boxAreaPx : 0);
     return result;
   };
 
-  /* ---------- sanity check ----------
-     Refuses on structurally-broken results; WARNS (doesn't refuse) on a
-     high-coverage trace — the user decides whether a near-100% trace is
-     right or a sign the box sat inside an existing annotation/solid fill. */
+  /* ---------- sanity check: refuses on structurally-broken results, warns on high coverage ---------- */
   RW._elbowSanityCheck = function(poly, boxN, meta){
     if (!poly || poly.length < 3) return 'traced shape has too few points';
     if (meta && meta.coverage < 0.0002) return 'found almost nothing inside the box — try picking a color, or raising "tol"';
@@ -536,10 +471,7 @@
     RW._syncElbowBtns();
   };
 
-  /* ---------- interaction: drag a box, OR click a series of points and
-     double-click to close a tighter polygon region (same 5px click/drag
-     threshold and capture-phase mousedown/mousemove/mouseup/click/dblclick
-     template the Rect mask tool / Pipe tool already use) ---------- */
+  /* ---------- interaction: drag a box, or click points + double-click to close a region ---------- */
   ac.addEventListener('mousedown', function(e){
     if (!RW.elbowMode) return;
     e.stopPropagation(); e.preventDefault();
@@ -560,9 +492,6 @@
   ac.addEventListener('mousemove', function(e){
     if (!RW.elbowMode || !downClient) return;
     e.stopPropagation();
-    // dragging an existing box corner or region vertex: mutate it, redraw
-    // immediately, and debounce a full re-detect so the traced highlight
-    // updates live without re-running the pipeline on every mouse event.
     if (RW._elbowDragHandle){
       const n = RW._toNorm(e.clientX, e.clientY);
       if (RW._elbowDragHandle.type === 'box'){
@@ -577,8 +506,6 @@
       scheduleElbowRerun();
       return;
     }
-    // once a region vertex exists, never fall into rectangle-drag — a shaky
-    // click while placing a vertex shouldn't silently discard the polygon.
     if (RW._elbowRegionWip && RW._elbowRegionWip.length) return;
     const d = Math.hypot(e.clientX-downClient.x, e.clientY-downClient.y);
     if (d > 5) dragging = true;
@@ -595,8 +522,6 @@
     const rl = document.getElementById('rw-elbow-rect'); if (rl) rl.remove();
     const wasDragging = dragging; dragging = false;
     if (RW._elbowDragHandle){
-      // release: settle on an immediate, non-debounced detect so the final
-      // result matches exactly where the handle was dropped.
       RW._elbowDragHandle = null;
       clearTimeout(elbowRerunTimer);
       RW._runElbowDetect();
@@ -622,12 +547,6 @@
       return;
     }
     if (!wasDragging){
-      // a plain click: place (or continue) a polygon-region vertex, at the
-      // MOUSEDOWN position (not mouseup) so it lands where the user aimed.
-      // Every plain click adds a vertex, whether or not one already exists —
-      // an earlier version of this handler returned early once a first
-      // vertex existed, which silently discarded every click after the
-      // first and made a polygon region impossible to ever close.
       if (!RW._elbowRegionWip) RW._elbowRegionWip = [];
       RW._elbowRegionWip.push(RW._toNorm(down.x, down.y));
       dragStartN = null;
@@ -650,9 +569,6 @@
     if (!RW.elbowMode) return;
     e.stopPropagation(); e.preventDefault();
     if (!RW._elbowRegionWip || RW._elbowRegionWip.length < 3) return;
-    // a real double-click fires two full mousedown/mouseup pairs before this
-    // event, so the closing click already appended a near-duplicate vertex
-    // — drop it.
     const pts = RW._elbowRegionWip.slice();
     const [lx,ly] = pts[pts.length-1], [px,py] = pts[pts.length-2];
     if (Math.hypot(lx-px, ly-py) < 0.002) pts.pop();
@@ -685,8 +601,6 @@
     }
   }, true);
 
-  // `L` arms/disarms the tool itself — works even when RW.elbowMode is
-  // currently false (matches RW.pipeMode's own `C` key, rw_wallspan.js).
   window.addEventListener('keydown', function(e){
     const t = e.target;
     if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
@@ -716,7 +630,6 @@
       const [bx0,by0] = RW._toPx(b.x0,b.y0), [bx1,by1] = RW._toPx(b.x1,b.y1);
       html += '<rect x="'+bx0+'" y="'+by0+'" width="'+(bx1-bx0)+'" height="'+(by1-by0)
         + '" fill="none" stroke="#ff8c00" stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>';
-      // draggable corner handles
       [[b.x0,b.y0],[b.x1,b.y0],[b.x1,b.y1],[b.x0,b.y1]].forEach(([nx,ny])=>{
         const [px,py] = RW._toPx(nx,ny);
         html += '<circle cx="'+px+'" cy="'+py+'" r="5" fill="#fff" stroke="#ff8c00" stroke-width="2"/>';
@@ -725,7 +638,6 @@
     if (RW._elbowRegionN){
       const pts = RW._elbowRegionN.map(([nx,ny]) => { const [px,py]=RW._toPx(nx,ny); return px+','+py; }).join(' ');
       html += '<polygon points="'+pts+'" fill="none" stroke="#ff8c00" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.7"/>';
-      // draggable vertex handles
       RW._elbowRegionN.forEach(([nx,ny])=>{
         const [px,py] = RW._toPx(nx,ny);
         html += '<circle cx="'+px+'" cy="'+py+'" r="5" fill="#fff" stroke="#ff8c00" stroke-width="2"/>';
@@ -744,9 +656,7 @@
     RW._renderElbowPx();
   };
 
-  // Debug overlay — a 2-state cycle (source / selected), mirroring the `W`
-  // wall-overlay convention. Positioned in PERCENTAGE coordinates of
-  // #pdf-container so it stays glued to the drawing through pan/zoom.
+  // Debug overlay: 2-state cycle (source / selected). Positioned in percentage coordinates of #pdf-container.
   RW._renderElbowPx = function(){
     const old = document.getElementById('rw-elbow-px'); if (old) old.remove();
     if (!RW._elbowPxState || !RW._elbowRaster) return;
@@ -849,8 +759,6 @@
   }
 
   /* ---------- panel ---------- */
-  // Mounts into the FITTINGS section (rw_panelsections.js) if present;
-  // otherwise falls back to the legacy bar-append idiom.
   const sec = (RW.panelSection && RW.panelSection('fittings', 'FITTINGS'))
     || (document.getElementById('rw-pick') || {}).parentNode;
 
@@ -942,8 +850,6 @@
     resInp.oninput    = () => { const v=parseFloat(resInp.value);    if (!isNaN(v) && v>0){  RW._elbowRes=v;     scheduleElbowRerun(); } };
     ptsInp.oninput    = () => { const v=parseInt(ptsInp.value,10);   if (!isNaN(v) && v>=0){ RW._elbowTargetPts=v; scheduleElbowRerun(); } };
     tolInp.oninput    = () => { const v=parseFloat(tolInp.value);    if (!isNaN(v) && v>=0){ RW._elbowColorTol=v; scheduleElbowRerun(); } };
-    // width is a ONE-SHOT seed, not a standing tunable — writes a concrete
-    // value into "min px" once, exactly like typing into that input directly.
     widthInp.oninput  = () => {
       const v = parseFloat(widthInp.value);
       if (isNaN(v) || v<=0) return;

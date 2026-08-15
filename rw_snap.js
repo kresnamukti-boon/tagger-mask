@@ -3,19 +3,15 @@
 // and the live preview point (mousemove) to nearby line endpoints/
 // intersections on the wall bitmap, or to any included region's outline.
 //
-// Pipeline (rebuilt lazily — only when RW._snapDirty, on the next snap query):
-//   1. Density-prefilter RW.wall (RW._buildThinMask, integral image):
-//      excludes wall pixels whose local window is mostly wall before
-//      skeletonizing.
+// Pipeline (rebuilt lazily on RW._snapDirty):
+//   1. Density-prefilter RW.wall (RW._buildThinMask, integral image).
 //   2. Skeletonize (Zhang-Suen thinning, active-list based).
-//   3. Classify by 8-neighbor count: 1 = endpoint, 3+ = junction, 2 = not a
-//      candidate.
-//   4. Cluster nearby candidates into one point per real junction (junction
-//      wins over endpoint in a mixed cluster).
+//   3. Classify by 8-neighbor count: 1 = endpoint, 3+ = junction, 2 = not a candidate.
+//   4. Cluster nearby candidates (junction wins over endpoint in a mixed cluster).
 //   5. RW._buildEdgePoints adds every included region's boundary pixel as its
-//      own unclustered 'edge' candidate, via one O(W×H) pass over RW.labels.
-//   6. Index all points in a bucket grid; catch radius (RW._snapCatchPx) is
-//      recomputed per-query to stay ~14 screen px regardless of zoom.
+//      own unclustered 'edge' candidate.
+//   6. Index all points in a bucket grid; catch radius (RW._snapCatchPx)
+//      recomputed per-query, ~14 screen px regardless of zoom.
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v26) return 'need v2.6 first';
@@ -136,8 +132,6 @@
   };
 
   /* ---------- 4. cluster nearby candidates ---------- */
-  // A cluster is bucketed by its FIRST point's position; later merges can
-  // drift its centroid without re-bucketing. Harmless at these small merge radii.
   RW._clusterPoints = function(candidates, mergeR){
     const buckets = new Map();
     const clusters = [];
@@ -169,8 +163,6 @@
   };
 
   /* ---------- 5. region-outline edge points (single-pass, unclustered) ---------- */
-  // Each boundary pixel is its own candidate (not merged like junctions),
-  // so a vertex can land anywhere along the outline, not just at corners.
   RW._buildEdgePoints = function(){
     const {W,H,labels,regions} = RW;
     const edgePts = [];
@@ -195,13 +187,12 @@
 
   /* ---------- 6. spatial index + zoom-invariant catch radius ---------- */
   RW._snapMergeRadiusPx = function(){
-    return Math.max(3, Math.round(6 * (RW.W/2592))); // same 2592-baseline scaling as _areaFloor
+    return Math.max(3, Math.round(6 * (RW.W/2592)));
   };
   RW._snapCellPx = function(){
     return Math.max(4, Math.round(RW.W/200));
   };
   RW._snapCatchPx = function(){
-    // ~14 screen px catch radius regardless of zoom
     const cr = document.getElementById('pdf-container').getBoundingClientRect();
     return (14 / cr.width) * RW.W;
   };
@@ -242,8 +233,6 @@
     const thin = RW._buildThinMask();
     const {skel, pts} = RW._skeletonize(thin);
     const candidates = RW._classifySkeleton(skel, pts);
-    // Cached raw (unclustered) so density-based detectors (rw_textdetect.js) can
-    // read local point density — _clusterPoints below deliberately erases it.
     RW._skeletonCandidates = candidates;
     const clustered = RW._clusterPoints(candidates, RW._snapMergeRadiusPx());
     const edgePts = (RW.labels && RW.regions) ? RW._buildEdgePoints() : [];

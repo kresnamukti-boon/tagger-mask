@@ -17,22 +17,15 @@
   RW.v25 = true;
 
   /* ---------- contour tracing (Moore neighbor), generic over any 1/0 mask ----------
-     Traces/smooths/simplifies any 1/0 mask (not just RW.labels regions), so
-     e.g. rw_wallspan.js's wall-span selections share this pipeline. Reads no
-     global RW.smoothPasses/RW.smoothEps — callers pass explicit
-     smoothPasses/eps; _groupToPolygon (below) is the only place those
-     globals are read, preserving region-commit behavior.
-     opts: { seed:{x,y}|null (skip the O(W*H) scan if the caller already
-              knows a mask pixel), smoothPasses:int (Chaikin rounds, ~0.5-1px
+     Traces/smooths/simplifies any 1/0 mask, not just RW.labels regions.
+     Reads no global RW.smoothPasses/RW.smoothEps; callers pass explicit
+     smoothPasses/eps.
+     opts: { seed:{x,y}|null, smoothPasses:int (Chaikin rounds, ~0.5-1px
               inward erosion each), eps:number (DP tolerance, ignored if
               targetPts set), targetPts:int|null (bisect eps to the vertex
-              count closest to, without exceeding, this target — see
-              rw_elbow.js's `pts`; bisects only the cheap final simplify
-              step, not the trace/Chaikin), W:int, H:int (override RW.W/RW.H
-              for a local raster not sized to the page, e.g. rw_elbow.js's
-              detection crop; defaults to RW.W/RW.H) } */
-  // Douglas-Peucker on an OPEN polyline, self-recursing via RW._dpOpen (not a
-  // closure) so RW._traceGridBoundary's own `pts` cap can reuse it too.
+              count closest to, without exceeding, this target), W:int, H:int
+              (override RW.W/RW.H, default RW.W/RW.H) } */
+  // Douglas-Peucker on an open polyline.
   RW._dpOpen = function(pts, eps2){
     if (pts.length<3) return pts;
     const [x1,y1]=pts[0], [x2,y2]=pts[pts.length-1];
@@ -49,20 +42,9 @@
     return [pts[0], pts[pts.length-1]];
   };
 
-  // Simplify a CLOSED ring at a given eps — splits at the point farthest
-  // from ring[0] (eps-independent; pass a precomputed `far` when bisecting
-  // many eps values to skip re-scanning) into two open chains, DP-simplifies
-  // each, merges. Works on any closed point ring regardless of source
-  // (Chaikin-smoothed Moore trace or RW._traceGridBoundary's exact walk).
-  //
-  // FIXED BUG: the second half used to run `RW._dpOpen(ring.slice(far),
-  // eps2)`, stopping at ring[n-1] instead of wrapping back to ring[0] — the
-  // final `.slice(0,-1)` merge then silently dropped the ring's true closing
-  // vertex. Invisible for years on Chaikin-smoothed rings (the dropped point
-  // sits ~0.25-0.75px from ring[0]) but a real, visible defect on an exact
-  // grid-boundary trace (e.g. a rectangle simplified to a 3-point triangle at
-  // any eps). Fixed by appending ring[0] onto the second half before
-  // simplifying, so DP sees the true closing edge.
+  // Simplify a closed ring at a given eps: splits at the point farthest from
+  // ring[0] into two open chains (each including ring[0] as an endpoint),
+  // DP-simplifies each, merges. `far` optional, precomputed if given.
   RW._simplifyRing = function(ring, eps2, far){
     if (far == null){
       let farD=0; far=0;
@@ -76,23 +58,13 @@
     return h1.slice(0,-1).concat(h2.slice(0,-1));
   };
 
-  // Bisect eps to land at the vertex count closest to, without exceeding,
-  // `targetPts` — extracted out of RW._maskToPolygon's inline bisection so
-  // RW._traceGridBoundary's own `pts` cap can reuse the exact same bracket
-  // and "unreachable" handling instead of re-deriving it. `far` is passed
-  // straight through to RW._simplifyRing on every iteration (still
-  // eps-independent, so still safe to reuse — see RW._simplifyRing's own
-  // comment); each of the ~20 iterations only re-runs the cheap DP halves,
-  // never re-traces or re-Chaikins.
+  // Bisects eps (range 0.05-1e5) to the point count closest to, without
+  // exceeding, `targetPts`.
   RW._bisectRingToTargetPts = function(ring, targetPts, far){
-    // Floor above 0 (not at it): eps->0 makes DP retain nearly every point,
-    // and its recursion depth scales with retained-point count — a real
-    // risk once `ring` is large (a high-resolution local raster, see
-    // rw_elbow.js's `res` tunable).
     let lo = 0.05, hi = 1e5;
     const at = (eps) => RW._simplifyRing(ring, eps, far);
     if (at(lo).length <= targetPts) return at(lo);
-    if (at(hi).length > targetPts) return at(hi); // unreachable even at max simplification — caller should notice
+    if (at(hi).length > targetPts) return at(hi);
     for (let iter=0; iter<20; iter++){
       const mid = (lo+hi)/2;
       if (at(mid).length <= targetPts) hi = mid; else lo = mid;
@@ -127,9 +99,7 @@
       if (!found) break;
       if (cx===sx&&cy===sy&&path.length>3) break;
     }
-    // Chaikin corner-cutting: smooth pixel staircases (dragon's teeth) on
-    // diagonal edges. Each vertex -> two points at 25%/75% of adjacent edges.
-    // `rounds` progressively erode ~0.5-1px inward per pass at mask res.
+    // Chaikin corner-cutting: each vertex -> two points at 25%/75% of adjacent edges.
     function chaikin(pts, rounds){
       let out = pts;
       for (let p=0;p<rounds;p++){
@@ -143,12 +113,6 @@
       }
       return out;
     }
-    // The `path.length>=8` gate and Chaikin's `work`/`far` split are both
-    // eps-independent (far is picked by max distance from work[0], computed
-    // before any eps comparison) — run them ONCE, then RW._simplifyRing just
-    // re-runs the cheap DP halves. This is what makes targetPts's bisection
-    // below affordable: each of its ~20 iterations only redoes DP, not the
-    // Moore trace or Chaikin smoothing.
     let work = null, far = 0;
     if (path.length >= 8){
       work = chaikin(path, passes);
@@ -171,54 +135,28 @@
     return simp.map(([x,y])=>({x:+(x/W).toFixed(6), y:+(y/H).toFixed(6)}));
   };
 
-  /* ---------- exact pixel-EDGE boundary tracer, distinct from the Moore
-     pixel-CENTER tracer above ----------
-     RW._maskToPolygon walks pixel CENTERS (8-connected, diagonal jumps
-     allowed) and relies on Chaikin+DP to turn the resulting staircase into a
-     smooth curve. This tracer instead walks the grid EDGES *between* pixels
-     — every output edge is purely horizontal or vertical, and a vertex is
-     emitted only where the walk genuinely changes direction, so a long
-     straight run of boundary pixels collapses to one edge for free, with no
-     simplification pass needed. Built for rw_elbow.js's "pixel-precise"
-     trace mode (RW._elbowPixelPrecise) — the user's own ask, after finding
-     the Px:src debug overlay more trustworthy than the smoothed trace once a
-     color has been picked.
+  /* ---------- exact pixel-edge boundary tracer ----------
+     Walks the grid edges between pixels: every output edge is horizontal or
+     vertical, a vertex only where the walk changes direction. No Chaikin/DP.
 
-     Construction: each foreground pixel's 4 sides bordering background (or
-     out-of-bounds, background by convention) become directed edges between
-     the two grid corners at that side, foreground always on the RIGHT of
-     travel — repeated right turns cycle N->E->S->W->N, clockwise in this
-     codebase's y-down coordinates, matching the Moore tracer's orientation.
+     Each foreground pixel's 4 sides bordering background (or out-of-bounds)
+     are directed edges between the two grid corners at that side, foreground
+     on the RIGHT of travel — right turns cycle N->E->S->W->N, clockwise in
+     this codebase's y-down coordinates.
 
-     No seed: always starts at the topmost-then-leftmost foreground pixel,
-     which is provably unambiguous (an ambiguous corner needs its diagonal-
-     opposite pixel foreground too, which would have to appear earlier in
-     raster order — a contradiction).
+     Starts at the topmost-then-leftmost foreground pixel, no seed param.
 
-     Ambiguous corners: an 8-connected region can touch itself diagonally at
-     one corner, which this construction sees as 2 valid outgoing directions
-     there (always an opposite pair). RULE: take the direction 90 degrees
-     COUNTER-CLOCKWISE from the incoming one. This is the correct pairing for
-     8-connected-foreground/4-connected-background (the standard convention
-     that avoids ambiguity at a shared corner) — the CLOCKWISE reading
-     instead traces only half of a diagonally-touching component, or (for a
-     ring with a hole) splices the hole into the outer boundary as one wrong
-     shape. Derived by hand and independently re-derived by an adversarial
-     review; full worked proof (a 2x2 checkerboard, a 3x3 ring) is in
-     CLAUDE.md and directly tested in verify_gridboundary.js. **Do not "fix"
-     this back to clockwise without re-reading that proof** — it looks like
-     an arbitrary choice but isn't.
+     Ambiguous corner (an 8-connected region touching itself diagonally, 2
+     valid outgoing directions): take the direction 90 degrees
+     COUNTER-CLOCKWISE from the incoming one. Full proof: CLAUDE.md,
+     verify_gridboundary.js.
 
-     Output can be a WEAKLY simple polygon (a genuine pinch point revisits
-     one corner) — exact for area, but a caller simplifying with DP
-     (RW._bisectRingToTargetPts) must check for a resulting true self-
-     intersection; that check lives in rw_elbow.js, not here, since this
-     function's job is to trace exactly, not simplify.
+     Output can be a weakly simple polygon (a pinch point revisits one
+     corner); a caller simplifying with DP (RW._bisectRingToTargetPts) must
+     check for a resulting self-intersection (done in rw_elbow.js).
 
-     opts: { W:int, H:int }. Returns [{x,y}] (same 0-1 fraction format as
-     RW._maskToPolygon) or null if the mask is empty or the walk can't close
-     (a bug, not expected on a real boundary — the step budget is a safety
-     net only). */
+     opts: { W:int, H:int }. Returns [{x,y}] or null if the mask is empty or
+     the walk can't close. */
   RW._traceGridBoundary = function(mask, opts){
     opts = opts || {};
     const W = opts.W != null ? opts.W : RW.W;
@@ -231,10 +169,10 @@
     const fg = (x,y) => x>=0 && x<W && y>=0 && y<H && mask[y*W+x]===1;
     const DIRS = { E:[1,0], S:[0,1], W:[-1,0], N:[0,-1] };
     const CCW  = { N:'W', W:'S', S:'E', E:'N' };
-    const maxSteps = 4*fgCount + 8; // a correct trace can never exceed this — mirrors RW._maskToPolygon's own step<400000 bailout idiom
+    const maxSteps = 4*fgCount + 8;
 
     let cx = startX, cy = startY;
-    let dir = 'E'; // proven unambiguous first direction, see header comment
+    let dir = 'E';
     const verts = [[cx, cy]];
     let steps = 0;
     while (true){
@@ -242,21 +180,16 @@
       cx += dx; cy += dy;
       steps++;
       if (steps > maxSteps) return null;
-      if (cx === startX && cy === startY) break; // closed — start corner's position is already verts[0]
+      if (cx === startX && cy === startY) break;
 
-      // The 4 pixels touching this corner: NW=(cx-1,cy-1), NE=(cx,cy-1),
-      // SW=(cx-1,cy), SE=(cx,cy). Each of the 4 possible outgoing directions
-      // from a corner is valid iff exactly one of its two flanking pixels is
-      // foreground — derived directly from the per-pixel-side construction
-      // above (e.g. "outgoing east" is pixel(cx,cy)'s own top edge, valid
-      // iff SE is foreground and NE is not).
+      // 4 pixels touching this corner: NW=(cx-1,cy-1), NE=(cx,cy-1), SW=(cx-1,cy), SE=(cx,cy).
       const NW = fg(cx-1,cy-1), NE = fg(cx,cy-1), SW = fg(cx-1,cy), SE = fg(cx,cy);
       const validE = SE && !NE, validS = SW && !SE, validW = NW && !SW, validN = NE && !NW;
       const count = (validE?1:0) + (validS?1:0) + (validW?1:0) + (validN?1:0);
-      if (count === 0) return null; // structurally impossible on a real boundary — safety net, not an expected path
+      if (count === 0) return null;
       const nextDir = count === 1
         ? (validE ? 'E' : validS ? 'S' : validW ? 'W' : 'N')
-        : CCW[dir]; // ambiguous corner — see header proof
+        : CCW[dir];
       if (nextDir !== dir) verts.push([cx, cy]);
       dir = nextDir;
     }
@@ -273,8 +206,6 @@
       const l = labels[i];
       uni[i] = (l>=0 && memberIds.has(l)) ? 1 : 0;
     }
-    // Globals win here, exactly as before the v3.1 refactor — _maskToPolygon
-    // itself no longer looks at RW.smoothPasses/RW.smoothEps at all.
     const passes = RW.smoothPasses != null ? RW.smoothPasses : 4;
     const e2 = RW.smoothEps != null ? RW.smoothEps : (eps||1.2);
     return RW._maskToPolygon(uni, {seed:null, smoothPasses:passes, eps:e2});
@@ -282,11 +213,7 @@
 
   /* ---------- direct annotation creation ---------- */
   let tempCounter = 1;
-  // notes: optional string (default '', matching every caller before this
-  // parameter existed) — e.g. rw_wallspan.js's commitPipe uses this to record
-  // the measured pipe width, and rw_elbow.js's commitElbow uses it to record
-  // its detection tunables, without inventing a new annotation type or a
-  // text-rendering mechanism of its own.
+  // notes: optional string, default ''.
   RW._createPendingAnnotation = function(normPts, notes){
     notes = notes || '';
     const st = annotationState;
@@ -310,9 +237,7 @@
       _pending: true,
       _data: annotationData,
     };
-    // 1. state
     st.annotations.push(newAnnotation);
-    // 2. WAL entry (this is what buildSaveManifest reads)
     window.editHistory.push(window.createHistoryEntry('create_annotation', {
       description: 'Draw polygon',
       targetId: newAnnotation.id,
@@ -323,9 +248,7 @@
     return newAnnotation;
   };
 
-  /* ---------- redraw: force the app to re-render annotations ----------
-     renderAnnotations is module-scoped. The exposed zoom controls trigger a
-     full re-render pipeline. We do a silent zoom round-trip. */
+  /* ---------- redraw: zoom-button round-trip ---------- */
   RW._forceRender = async function(){
     const zin = document.getElementById('zoom-in-btn');
     const zout = document.getElementById('zoom-out-btn');

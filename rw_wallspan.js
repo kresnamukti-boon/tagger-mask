@@ -1,22 +1,11 @@
-// RW v3.1 — Pipe annotation: a fixed-width path, not a traced pixel blob.
+// RW v3.1 — Pipe annotation: a fixed-width path. Click along the centerline
+// (multiple points for bends), drag once to measure a fixed width, builds a
+// constant-width ribbon. Reads RW.wall only via the Poly2 vertex-snap index,
+// for point precision. Full history: CLAUDE.md.
 //
-// An earlier version traced actual drawn pixels (flood-fill through RW.wall,
-// bounded by auto-detected fittings) — abandoned because piping-centerline
-// drawings are visually interrupted by text labels, leader lines, and gaps,
-// which broke the real pixel linework in ways no tuning could fix (full
-// history in CLAUDE.md). This version reads RW.wall only indirectly, via the
-// Poly2 vertex-snap index for point precision — never to decide the pipe's
-// path/width. Click along the centerline (multiple points for bends), drag
-// once to measure a fixed width off the drawing, and it builds a constant-
-// width ribbon: crossing a text label or fitting symbol never changes
-// direction/width, since nothing depends on what's actually drawn in between.
+// Load LAST (after rw_textdetect.js, needs v2.9).
 //
-// Load LAST (after rw_textdetect.js, needs v2.9) — position kept for
-// build_loader.sh stability, no longer a real dependency.
-//
-// Elbow fittings moved out to their own tool (rw_elbow.js, v3.2, press L) —
-// this file no longer reads any pixels at all. See CLAUDE.md for the
-// in-pipe predecessor this replaced and the bug it hit.
+// Elbow fittings: rw_elbow.js, v3.2, press L.
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v29) return 'need v2.9 (rw_textdetect.js) first';
@@ -29,42 +18,27 @@
   RW.pipeMode      = false;
   RW._pipePts      = [];     // confirmed path points, normalized [nx,ny] page-space
   RW._pipeFinished = false;  // true once double-click has closed off the path
-  RW._pipeWidth    = Math.max(3, Math.round(6 * (RW.W/2592))); // mask px, 2592-baseline like other stroke widths in this codebase
-  let downPos = null;         // client {x,y} at mousedown, for click-vs-drag
-  let dragging = false;       // true once movement has exceeded the click threshold
+  RW._pipeWidth    = Math.max(3, Math.round(6 * (RW.W/2592))); // mask px
+  let downPos = null;         // client {x,y} at mousedown
+  let dragging = false;
   let dragCurClient = null;   // live end point of an in-progress width-measure drag
 
-  // RW._pipeWidth is a plain float — a drag distance under 1 mask-px is
-  // real and legitimate (e.g. a thin line at a zoomed-out view), never
-  // rounded in the actual geometry. Every DISPLAY of it must show that same
-  // precision instead of Math.round()'ing it to 0/1, which looked like the
-  // measurement had failed (confirmed live: a sub-1px drag showed "0" or "1"
-  // in the panel despite the real value being used correctly underneath).
   RW._fmtWidth = function(v){
     return (Math.round(v*100)/100).toString();
   };
 
   /* ---------- geometry: path + width -> closed ribbon polygon ---------- */
   // ptsN: [nx,ny] normalized points, widthPx: mask-px width. Returns {x,y}
-  // normalized points (same shape RW._maskToPolygon produces) or null if the
-  // path can't form a ribbon.
+  // normalized points or null.
   //
-  // Standard "stroke to filled ribbon": walk one rail forward, the other
-  // rail backward, close into one loop. Interior vertices use a scaled-
-  // average-perpendicular miter join, falling back to a true bevel (two
-  // separate points, one per segment's own perpendicular) past MITER_LIMIT —
-  // same concept SVG/canvas stroke rendering uses. This bevel fallback is a
-  // real bug fix: an earlier version clamped the miter's MAGNITUDE instead
-  // of switching to a bevel, which doesn't bound the resulting SHAPE — an
-  // acute bend still flared into a wide triangle (confirmed live). A true
-  // bevel point sits exactly `half` from the vertex along its own segment's
-  // perpendicular, incapable of that flare.
+  // Walk one rail forward, the other rail backward, close into one loop.
+  // Interior vertices use a scaled-average-perpendicular miter join, falling
+  // back to a true bevel (two separate points, one per segment's own
+  // perpendicular) past MITER_LIMIT.
   const MITER_LIMIT = 4;
   function analyticPipeRibbon(ptsN, widthPx){
     const {W,H} = RW;
     const pts = ptsN.map(([nx,ny]) => [nx*W, ny*H]);
-    // drop consecutive duplicate points (e.g. a double-click's extra vertex
-    // landing on the same spot as the click just before it)
     const clean = [pts[0]];
     for (let i=1;i<pts.length;i++){
       const [px,py] = clean[clean.length-1], [x,y] = pts[i];
@@ -74,7 +48,6 @@
     const n = clean.length;
     const half = widthPx/2;
 
-    // per-segment unit perpendiculars (rotate the segment direction 90°)
     const perp = [];
     for (let i=0;i<n-1;i++){
       const [x1,y1] = clean[i], [x2,y2] = clean[i+1];
@@ -82,8 +55,6 @@
       perp.push([-dy/len, dx/len]);
     }
 
-    // flat, incrementally-pushed rails (not one point per vertex) — an
-    // interior vertex contributes one point (miter) or two (bevel fallback).
     const left = [], right = [];
     left.push([clean[0][0]+perp[0][0]*half, clean[0][1]+perp[0][1]*half]);
     right.push([clean[0][0]-perp[0][0]*half, clean[0][1]-perp[0][1]*half]);
@@ -93,7 +64,7 @@
       const [vx,vy] = clean[i];
       let ax = p1[0]+p2[0], ay = p1[1]+p2[1];
       const alen = Math.hypot(ax,ay);
-      let bevel = alen < 1e-6; // ~180° reversal — degenerate miter direction, always bevel
+      let bevel = alen < 1e-6;
       let mx=0, my=0;
       if (!bevel){
         ax/=alen; ay/=alen;
@@ -120,10 +91,6 @@
 
   RW._pipeRibbon = function(ptsN, widthPx){
     if (!ptsN || ptsN.length < 2 || !(widthPx > 0)) return null;
-    // dedup in mask-px terms (matching analyticPipeRibbon's own internal
-    // threshold exactly) — NOT normalized-coordinate distance, which would
-    // be off by a factor of RW.W/RW.H and make this far less aggressive
-    // than intended.
     const {W,H} = RW;
     const clean = [ptsN[0]];
     for (let i=1;i<ptsN.length;i++){
@@ -134,21 +101,7 @@
     return analyticPipeRibbon(clean, widthPx);
   };
 
-  /* ---------- dimension line: tried and reverted ----------
-     A first version staged a SECOND small annotation (a tick straddling the
-     path's start, width in its own notes) alongside the ribbon. Live testing
-     showed it read as a random unlabeled shape, not a measurement — no
-     visible number on the canvas, and it sat wherever the path happened to
-     start rather than where the user was looking. Reverted: the width is now
-     recorded directly in the ribbon's own notes (RW.commitPipe below). If a
-     real dimension-line indicator is wanted again, it needs an actual
-     visible number on the drawing — check the app's annotation model
-     supports text rendering first (full account: CLAUDE.md). */
-
   /* ---------- sanity check before commit ---------- */
-  // Trivial compared to the pixel-tracing version — there's no pixel blob
-  // for a leaked-area/containment check to apply to; a valid path + a
-  // positive width is definitionally a sane ribbon.
   RW._pipeSanityCheck = function(ptsN, widthPx){
     if (!ptsN || ptsN.length < 2) return 'need at least a start and finish point';
     if (!(widthPx > 0)) return 'width must be greater than 0 — drag across the pipe to measure it';
@@ -186,9 +139,6 @@
     if (!d) return;
     const dist = Math.hypot(e.clientX-d.x, e.clientY-d.y);
     if (dragging || dist > 5){
-      // drag: measure width as the on-screen drag distance, converted to
-      // mask px the same zoom-invariant way RW._snapCatchPx does (screen px
-      // -> mask px via the live pdf-container width).
       const [ax,ay] = RW._toNorm(d.x, d.y), [bx,by] = RW._toNorm(e.clientX, e.clientY);
       const mx1=ax*RW.W, my1=ay*RW.H, mx2=bx*RW.W, my2=by*RW.H;
       const w = Math.hypot(mx2-mx1, my2-my1);
@@ -200,8 +150,7 @@
       RW._renderPipePreview(e.clientX, e.clientY);
       return;
     }
-    // click: add a path vertex (Poly2's exact placement idiom — rw_brushpoly.js).
-    if (RW._pipeFinished){ RW._pipePts = []; RW._pipeFinished = false; } // start a fresh path after a finished one
+    if (RW._pipeFinished){ RW._pipePts = []; RW._pipeFinished = false; }
     let [nx,ny] = RW._toNorm(e.clientX, e.clientY);
     if (RW._trySnap && !e.shiftKey){ const s = RW._trySnap(nx,ny); nx=s[0]; ny=s[1]; }
     RW._pipePts.push([nx,ny]);
@@ -228,10 +177,6 @@
     const t = e.target;
     if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (!RW.pipeMode) return;
-    if (e.key==='c'||e.key==='C'){
-      // still allow toggling the mode off/on via C even while mid-path — matches
-      // every other tool's own key both arming and disarming itself.
-    }
     if (e.key==='Escape'){
       e.preventDefault(); e.stopImmediatePropagation();
       if (RW._pipePts.length){
@@ -249,8 +194,6 @@
     }
   }, true);
 
-  // `C` arms/disarms the tool itself — separate listener so it works even
-  // when RW.pipeMode is currently false (the block above only fires once armed).
   window.addEventListener('keydown', function(e){
     const t = e.target;
     if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
@@ -262,9 +205,6 @@
   }, true);
 
   /* ---------- preview rendering ---------- */
-  // Live while drawing: the confirmed points plus (if the mouse isn't
-  // mid-drag) the current cursor as a provisional last point — same idiom
-  // as Poly2's own live area hint (rw_brushpoly.js:91-94).
   RW._renderPipePreview = function(clientX, clientY){
     const old = document.getElementById('rw-pipe-preview'); if (old) old.remove();
     if (!RW.pipeMode) return;
@@ -273,7 +213,6 @@
       const svg = RW._mkSvg('rw-pipe-preview', 71);
       svg.innerHTML = '<line x1="'+downPos.x+'" y1="'+downPos.y+'" x2="'+dragCurClient.x+'" y2="'+dragCurClient.y
         + '" stroke="#ff8c00" stroke-width="2" stroke-dasharray="4,3"/>';
-      // same mask-px conversion mouseup uses when it actually locks the value in
       const [ax,ay] = RW._toNorm(downPos.x, downPos.y), [bx,by] = RW._toNorm(dragCurClient.x, dragCurClient.y);
       const liveW = Math.hypot((bx-ax)*RW.W, (by-ay)*RW.H);
       RW._commitStatus('width: ' + RW._fmtWidth(liveW) + 'px (release to set)');
@@ -327,18 +266,10 @@
     if (problem){ RW._commitStatus('refused: ' + problem); return; }
     const ribbon = RW._pipeRibbon(RW._pipePts, RW._pipeWidth);
     if (!ribbon || ribbon.length < 4){ RW._commitStatus('refused: could not build a ribbon from this path'); return; }
-    // The measured width is recorded in the pipe's own notes rather than a
-    // second visible shape — see the "dimension line, tried and reverted"
-    // history note above RW._pipeSanityCheck for why a separate tick
-    // annotation was tried first and dropped.
     const a = RW._createPendingAnnotation(ribbon, 'pipe width: ' + RW._pipeWidth.toFixed(2) + ' px');
     await RW._forceRender();
     RW._lastCommit = [a];
     RW.clearPipe({keepStatus:true});
-    // set AFTER clearPipe, not before — clearPipe blanks the status by
-    // default (used by Escape/mode-off), which would otherwise overwrite
-    // this success message before the user ever sees it. Confirmed live:
-    // without keepStatus, this message flashed and vanished instantly.
     RW._commitStatus('staged 1 pipe (' + ribbon.length + ' pts, width ' + RW._fmtWidth(RW._pipeWidth) + 'px)'
       + ' — review and Save. To remove it before Save, select it in the app and press Delete.'
       + ' Got an elbow fitting to mark? Press L.');

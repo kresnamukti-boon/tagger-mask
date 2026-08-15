@@ -1,16 +1,7 @@
 // RW vsec — panel reorganization: labelled sections instead of one long
-// wrapping row.
-//
-// Post-load reflow: modules keep appending to the original anonymous
-// button-bar; this module moves controls BY ID into labelled sections
-// afterward. The `(document.getElementById('rw-pick')||{}).parentNode`
-// idiom every module uses keeps working — that element still exists, just
-// gets emptied after everyone else has appended to it.
-//
-// Timing: rw_panelux.js's retrofit() (wraps everything into #rw-body) is
-// deferred via setTimeout(...,100). This module runs synchronously near the
-// end of the same concatenated script, before that timer fires. Anchored
-// off #rw-list's OWN parent, not #rw-panel by name.
+// wrapping row. Post-load reflow: modules keep appending to the original
+// anonymous button-bar; this module moves controls by id into labelled
+// sections afterward.
 //
 // Load AFTER every tool module and BEFORE rw_elbow.js.
 (function(){
@@ -19,8 +10,6 @@
   if (RW.vsec) return 'panel sections already installed';
   RW.vsec = true;
 
-  // Shared style constants for new code to reuse; existing modules keep
-  // their own inline copies untouched.
   RW.ui = {
     BTN: 'font-size:11px;padding:2px 6px;',
     NUM: 'font-size:11px;padding:1px 4px;width:44px;text-align:right;',
@@ -32,7 +21,6 @@
   const host = list && list.parentNode; // #rw-panel now, or #rw-body if retrofit already ran
   if (!host){ return 'panel sections: #rw-list not found, skipping'; }
 
-  // Capture the legacy bar BEFORE the sweep, same lookup every module uses.
   const legacyBar = (document.getElementById('rw-pick') || {}).parentNode;
 
   const sections = document.createElement('div');
@@ -73,8 +61,7 @@
   const FITTINGS = RW.panelSection('fittings', 'FITTINGS');
   const VIEW     = RW.panelSection('view',     'VIEW');
 
-  // id -> destination section, in intended visual order. A missing id is
-  // skipped.
+  // id -> destination section.
   const moves = [
     [REGIONS, ['rw-pick','rw-merge','rw-cut','rw-commit','rw-refresh','rw-undo']],
     [MASK,    ['rw-rect','rw-poly2','rw-brush','rw-snap','rw-relabel-inp','rw-relabel-btn','rw-addmode']],
@@ -106,16 +93,7 @@
     });
   });
 
-  // Restore flex/gap on group-wrapper spans (#rw-pipe-group/#rw-textdetect-group
-  // predate this reorg and need it set explicitly; #rw-heal-group already sets
-  // its own).
-  //
-  // Real bug found live: `cssText += 'display:inline-flex;...'` appends a
-  // second `display` declaration rather than replacing it — for
-  // #rw-textdetect-group the existing one is `display:none` (rw_textdetect.js's
-  // deliberate hide), and the LATER declaration wins, silently un-hiding it.
-  // Fixed by setting individual style properties and preserving `display:none`
-  // on anything already hidden.
+  // Set flex/gap on group-wrapper spans, preserving display:none if already hidden.
   ['rw-pipe-group','rw-textdetect-group'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -125,8 +103,6 @@
     el.style.alignItems = 'center';
   });
 
-  // Safety net: an unanticipated leftover control stays visible (unsectioned)
-  // with a console warning, rather than silently disappearing.
   if (legacyBar){
     if (legacyBar.children.length){
       console.warn('[RW] unmapped panel controls left in the legacy bar:',
@@ -136,11 +112,7 @@
     }
   }
 
-  // Hide a section that ended up with zero children — build-time only, not a
-  // live re-evaluation. Deferred via setTimeout(0): checked synchronously,
-  // FITTINGS would always look empty here since rw_elbow.js (loaded right
-  // after this module) hasn't run yet, and would get hidden permanently.
-  // Deferring to the next tick runs this after the whole loader has finished.
+  // Hide any section with zero children, deferred via setTimeout(0).
   setTimeout(function(){
     Object.keys(sectionEls).forEach(key => {
       const row = sectionEls[key];

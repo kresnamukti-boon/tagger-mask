@@ -13,19 +13,13 @@
 //      as the noise are not distinguished from noise.
 //   5. Existing annotations' wall-knockout mask is rebuilt and excluded from
 //      both the flood and the result.
-//   6. Unsafe shell is widened via a bounded BFS (RW._healBarrierMargin) so
-//      thick barriers are protected through their full width, not just a
-//      1px outer skin.
+//   6. Unsafe shell widened via a bounded BFS (RW._healBarrierMargin).
 //
 // RW._healBarrierMargin expands only inward from a region's own outer wall
 // face, not both sides. Set barrier≥ to the line's full visible thickness,
 // not half.
 (function(){
   const RW = window.__RW;
-  // Needs v26 (rw_brushpoly.js): the cross-disarm wrap below reads
-  // RW.setMaskMode2, which doesn't exist until then. Without this gate the
-  // wrap silently no-ops instead of erroring, and Poly2/Brush stop disarming
-  // the heal brush — confirmed live.
   if (!RW || !RW.v26) return 'need v2.6 (rw_brushpoly.js) first';
   if (RW.v3) return 'v3 already installed';
   RW.v3 = true;
@@ -38,8 +32,7 @@
   //       path of only wall/same-region pixels (never crossing into exterior,
   //       a different included region, or a tiny excluded speck), and
   //   (b) SAFE — none of the pixel's own 4-neighbors are true unenclosed
-  //       exterior or a different included region (per-pixel, not a
-  //       connected-component veto — see failure modes 1-2 above).
+  //       exterior or a different included region (per-pixel test).
   RW._computeInteriorNoise = function(gids){
     const {W,H,labels,regions,wall} = RW;
     const memberIds = new Set(regions.filter(r=>gids.has(r.group)).map(r=>r.id));
@@ -47,11 +40,7 @@
 
     const isSameRegion = i => { const l=labels[i]; return l>=0 && memberIds.has(l); };
 
-    // A neighboring open area is "protected" if included, OR bigger than
-    // RW._healNoiseHoleMax — deliberately separate from RW._areaFloor (that
-    // tunes candidate-region selectability, not noise-vs-feature size): real
-    // rooms measured live at 868-5296px, well below a typical area-floor of
-    // 6026px, so reusing area-floor here failed to protect them.
+    // Protected: included, or bigger than RW._healNoiseHoleMax.
     const holeMax = RW._healNoiseHoleMax != null ? RW._healNoiseHoleMax : Math.round(300*(RW.W/2592));
     const isProtectedRegion = i => {
       const l = labels[i];
@@ -60,12 +49,7 @@
       return !!r && (r.included || r.size > holeMax);
     };
 
-    // Existing annotations get knocked out into RW.wall as filled interior
-    // (mirroring RW.extract()) but that knockout is indistinguishable from
-    // text/hatch wall by topology alone — a wall pixel deep inside an
-    // existing annotation looked "safe" too (failure mode 5). Rebuild the
-    // same knockout mask here and hard-exclude it from both the flood and
-    // the result.
+    // Rebuild existing annotations' wall-knockout mask; excluded from both the flood and the result.
     const annotationMask = new Uint8Array(W*H);
     if (typeof annotationState !== 'undefined'){
       const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
@@ -73,10 +57,6 @@
       actx.fillStyle = '#000';
       for (const a of annotationState.annotations){
         if (a._hidden || a.is_void) continue;
-        // bbox annotations store {x,y,width,height}, not a point array — the
-        // old `pts.length<3` guard let it through (`undefined<3` is false)
-        // to a pts.forEach() that doesn't exist on a plain object. Confirmed
-        // live; Array.isArray guards it now.
         const pts = a.coordinates; if (!Array.isArray(pts) || pts.length<3) continue;
         actx.beginPath();
         pts.forEach((p,idx)=>{ const X=p.x*W, Y=p.y*H; idx?actx.lineTo(X,Y):actx.moveTo(X,Y); });
@@ -86,9 +66,7 @@
       for (let i=0;i<W*H;i++) if (adata[i*4+3]>127) annotationMask[i]=1;
     }
 
-    // True-unenclosed-exterior mask (reachable from the sheet border without
-    // crossing a wall or any protected region), mirroring the same
-    // border-protected flood RW._relabel already uses internally.
+    // True-unenclosed-exterior mask: reachable from the sheet border without crossing a wall or protected region.
     const exterior = new Uint8Array(W*H);
     {
       const q = [];
@@ -105,10 +83,7 @@
       }
     }
 
-    // Reachability flood: from the region's own open pixels, step only into
-    // wall/same-region pixels — exterior, other included regions, and tiny
-    // specks are natural stopping barriers. Everything reached is "relevant"
-    // wall; anything unreached is left alone.
+    // Reachability flood from the region's own open pixels, stepping only into wall/same-region pixels.
     const reachableWall = new Uint8Array(W*H);
     const seenReach = new Uint8Array(W*H);
     const q2 = [];
@@ -123,17 +98,13 @@
       if (y<H-1) neigh.push(i+W);
       for (const n of neigh){
         if (seenReach[n]) continue;
-        if (annotationMask[n]) continue; // never enter an existing annotation's knockout
+        if (annotationMask[n]) continue;
         if (wall[n]===1){ seenReach[n]=1; reachableWall[n]=1; q2.push(n); }
         else if (isSameRegion(n)){ seenReach[n]=1; q2.push(n); }
-        // otherIncluded / exterior / tiny-speck-open: stop here, don't cross
       }
     }
 
-    // Per-pixel safety test restricted to reachable wall: flags reachable
-    // wall pixels whose immediate neighbor is exterior/protected/annotation
-    // (the "unsafe shell"). On a thick barrier only the outer ~1px skin
-    // triggers this — see failure mode 6 above.
+    // Unsafe shell: reachable wall pixels whose immediate neighbor is exterior/protected/annotation.
     const unsafeShell = new Uint8Array(W*H);
     for (let i=0;i<W*H;i++){
       if (!reachableWall[i] || annotationMask[i]) continue;
@@ -146,10 +117,7 @@
       if (unsafe) unsafeShell[i]=1;
     }
 
-    // Widen the unsafe shell by RW._healBarrierMargin via bounded BFS through
-    // reachable wall only — protects realistic barrier widths. One-sided
-    // only (see header): expansion only reaches inward from the barrier's
-    // outer face, so set the margin to the line's FULL thickness, not half.
+    // Widen the unsafe shell by RW._healBarrierMargin via bounded BFS through reachable wall.
     const margin = RW._healBarrierMargin != null ? RW._healBarrierMargin : Math.max(4, Math.round(12*(RW.W/2592)));
     const protectedExpanded = new Uint8Array(W*H);
     {
@@ -232,7 +200,6 @@
     if (ab) ab.style.display = (RW._healPreviewOn && RW._healNoiseMask) ? '' : 'none';
   };
 
-  // keep the preview in sync if the selection changes while it's on
   const origToggleGroup = RW.toggleGroup;
   RW.toggleGroup = function(gid){
     origToggleGroup.call(RW, gid);
@@ -246,8 +213,6 @@
   /* ---------- panel controls ---------- */
   const bar = (document.getElementById('rw-pick') || {}).parentNode;
   if (bar && !document.getElementById('rw-heal-btn')){
-    // Wrapped in a span so rw_panelsections.js can relocate the whole Heal
-    // cluster as one unit (same idiom as #rw-pipe-group/#rw-textdetect-group).
     const group = document.createElement('span');
     group.id = 'rw-heal-group';
     group.style.cssText = 'display:inline-flex;gap:4px;align-items:center;';
@@ -351,7 +316,6 @@
 
   RW.setHealBrushMode = function(on){
     if (on){
-      // cross-disarm the other mask tools, same pattern used throughout
       if (RW.maskMode){
         RW.maskMode=null; ac.style.cursor='';
         const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
@@ -419,10 +383,6 @@
     RW._renderHealBrushCursor(e.clientX, e.clientY);
   }, {capture:true, passive:false});
 
-  // RW.__tabHeld is shared, but rw_brushpoly.js's Tab handler only sets it
-  // when RW.maskMode2==='brush' — extend the same keydown/keyup pair to also
-  // fire for RW.healBrushMode (cross-disarm guarantees only one tool is
-  // active at a time, so sharing the flag is safe).
   window.addEventListener('keydown', function(e){
     if (e.key==='Tab' && RW.healBrushMode){
       RW.__tabHeld = true;
@@ -442,8 +402,6 @@
     }
   }, true);
 
-  // Reactive cross-disarm: wrap the shared arm functions Rect/Poly2/Brush
-  // already call, so both keyboard and panel-button arming disarm this tool.
   if (RW._syncRectBtn){
     const origSyncRectBtn = RW._syncRectBtn;
     RW._syncRectBtn = function(){
