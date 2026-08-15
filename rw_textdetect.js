@@ -1,38 +1,19 @@
 // RW v2.9 — text/dimension density overlay (DETECTION ONLY — no mask edits).
 // Load AFTER rw_snap.js (needs v27, reuses its skeleton-candidate data).
-// Prototype for the "auto text exclusion" roadmap item: flags areas where
-// skeleton endpoint/junction candidates cluster unusually densely — text
-// glyphs are small, stroke-heavy shapes, so they produce far more candidates
-// per unit area than real linework does (confirmed empirically while testing
-// rw_snap.js: dense clusters kept landing on labels/title-block text).
-//
-// This module ONLY renders an overlay of candidate bounding boxes. It never
-// touches RW.wall/RW.labels/RW.regions — purely a "does this heuristic look
-// useful on real pages" visualization, so it can be evaluated before any
-// auto-apply step is built. See CLAUDE.md's Text exclusion roadmap entry.
+// Flags areas where skeleton endpoint/junction candidates cluster densely.
+// Never touches RW.wall/RW.labels/RW.regions — visualization only.
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v27) return 'need v2.7 (rw_snap.js) first';
   if (RW.v29) return 'v2.9 already installed';
   RW.v29 = true;
 
-  // Tunable live from the panel (see inputs below) rather than fixed in code —
-  // this is explicitly for experimenting against real pages without a rebuild.
   RW._textCellPx = Math.max(6, Math.round(16 * (RW.W/2592)));
   RW._textMinPerCell = 4;
   RW._textDirty = true;
   RW._textCandidates = [];
 
-  // Existing committed annotations get knocked out into RW.wall as filled
-  // interiors (same step RW.extract already does) — an irregular/complex
-  // annotation shape skeletonizes into a tangle of branch points that mimics
-  // dense text, purely as a geometric artifact. Confirmed live: on a
-  // partially-annotated page, every single flagged candidate turned out to
-  // overlap an existing annotation, not real text. Rebuilding that same
-  // knockout mask here (rather than reading it off RW.wall, which has already
-  // merged it with linework) lets us exclude those pixels from the density
-  // scan — there's no reason to flag text inside an already-committed
-  // annotation anyway, that area's already resolved.
+  // Builds a mask of annotation interiors, used to exclude those pixels from the scan.
   RW._buildAnnotationMask = function(){
     const {W,H} = RW;
     const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
@@ -40,11 +21,7 @@
     ctx.fillStyle = '#000';
     for (const a of (typeof annotationState!=='undefined' ? annotationState.annotations : [])){
       if (a._hidden || a.is_void) continue;
-      // Array.isArray, not just !pts.length — a bbox-type annotation stores
-      // coordinates as {x,y,width,height}, not a point array; `undefined < 3`
-      // is false in JS, so the old guard let that object slip through to
-      // pts.forEach(), which doesn't exist on it. Confirmed live (same bug
-      // as rw_healinterior.js).
+      // Skip bbox-type annotations (no point array).
       const pts = a.coordinates; if (!Array.isArray(pts) || pts.length<3) continue;
       ctx.beginPath();
       pts.forEach((p,i)=>{ const X=p.x*W, Y=p.y*H; i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); });
@@ -58,14 +35,13 @@
 
   /* ---------- grid-bucket candidate density, then connect hot cells ---------- */
   RW._buildTextCandidates = function(){
-    if (RW._snapDirty) RW._buildSnapPoints(); // ensures RW._skeletonCandidates is fresh
+    if (RW._snapDirty) RW._buildSnapPoints(); // refreshes RW._skeletonCandidates
     const annMask = RW._buildAnnotationMask();
     const pts = (RW._skeletonCandidates || []).filter(p => !annMask[p.y*RW.W + p.x]);
     const cell = RW._textCellPx;
     const minPerCell = RW._textMinPerCell;
     if (!pts.length){ RW._textCandidates = []; RW._textDirty = false; return; }
 
-    // bucket raw (unclustered) candidates into a coarse grid
     const counts = new Map();       // 'cx_cy' -> count
     const cellPts = new Map();      // 'cx_cy' -> [{x,y},...]
     for (const p of pts){
@@ -76,13 +52,10 @@
       cellPts.get(k).push(p);
     }
 
-    // hot cells: density at/above threshold
     const hot = new Set();
     for (const [k,c] of counts) if (c >= minPerCell) hot.add(k);
 
-    // connect adjacent hot cells (4-connected) into candidate regions —
-    // same conceptual flood-fill/labeling pattern used elsewhere in this
-    // codebase (RW.extract's component labeling), just over a density grid.
+    // connect adjacent hot cells (4-connected)
     const visited = new Set();
     const candidates = [];
     for (const k of hot){
@@ -99,7 +72,6 @@
           if (hot.has(nk) && !visited.has(nk)){ visited.add(nk); stack.push(nk); }
         }
       }
-      // bounding box over every point in every cell of this connected group
       let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity,total=0;
       for (const k2 of group){
         for (const p of cellPts.get(k2)){
@@ -139,9 +111,8 @@
     if (status) status.innerText = RW._textCandidates.length + ' candidates';
   };
 
-  // invalidate whenever the wall changes (same dirty flag rw_snap.js already
-  // wires up via RW._relabel/RW.extract — piggyback on RW._snapDirty rather
-  // than adding a second wrapper layer)
+  // piggyback on RW._snapDirty (already wired to RW._relabel/RW.extract)
+  // instead of adding a second wrapper layer.
   RW._textDirty = true;
   const origBuildSnapPoints = RW._buildSnapPoints;
   RW._buildSnapPoints = function(){ origBuildSnapPoints.apply(RW, arguments); RW._textDirty = true; };
@@ -149,8 +120,7 @@
   /* ---------- panel controls ---------- */
   const bar = (document.getElementById('rw-pick') || {}).parentNode;
   if (bar && !document.getElementById('rw-textdetect')){
-    // Single wrapper so the whole cluster (button + cell/min inputs + status)
-    // can be shown/hidden as one unit — see the "hide clutter" block below.
+    // wrapper lets the whole cluster be hidden as one unit (see below).
     const group = document.createElement('span');
     group.id = 'rw-textdetect-group';
 
@@ -200,11 +170,9 @@
     bar.appendChild(group);
   }
 
-  /* ---------- hide clutter (per user request, not currently useful for
-     their work) — hide, don't remove, so the underlying functionality stays
-     intact and easy to re-enable later. Same convention rw_brushpoly.js
-     already uses to hide its own legacy 'poly' button. Done here (loaded
-     last) since Relabel/Add live in earlier-loaded files. ---------- */
+  /* ---------- hide clutter (per user request): hide, don't remove — same
+     convention as rw_brushpoly.js's legacy 'poly' button. Done here since
+     Relabel/Add live in earlier-loaded files. ---------- */
   ['rw-relabel-btn', 'rw-addmode', 'rw-textdetect-group'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';

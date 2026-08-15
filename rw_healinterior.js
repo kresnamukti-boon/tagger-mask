@@ -1,108 +1,31 @@
 // RW v3 — interior noise healing.
 //
-// Status: shipped, in both console loaders. Paused for a time after four
-// rounds of live testing each surfacing a genuinely different failure mode
-// (see below); a fifth round (annotation-knockout protection) fixed the
-// remaining known issue and this was re-enabled. A sixth round (barrier-
-// margin expansion) fixed a thick-line erosion issue found afterward. If a
-// new failure mode turns up, read all six rounds below first before assuming
-// it's something new — the fix for one round has occasionally looked like it
-// broke another.
+// Detects wall pixels inside a selected region's group that are interior
+// noise (text/hatch/dimension/leader marks) rather than the region's
+// perimeter, and can erase them.
 //
-// Reframed from the whole-page text-density overlay (rw_textdetect.js) after
-// live testing showed the real problem isn't "where does text sit on the
-// page" — it's "which wall pixels inside a region about to be committed are
-// pure interior noise (text/hatch/dimension/leader marks) versus the
-// region's genuine perimeter." Dimension/extension/leader lines legitimately
-// touch a region's true boundary and reach into its interior, so the commit
-// contour trace doesn't just ignore them — it weaves in and follows the
-// text/hatch shape itself, producing a jagged polygon instead of one clean
-// outline.
+// Detection steps:
+//   1. Per-pixel safety test (not a whole-component veto).
+//   2. Bounded by reachability flood, not a fixed pad.
+//   3. Hole-size threshold (RW._healNoiseHoleMax): a neighboring open area
+//      larger than this counts as protected even if not `included`.
+//   4. Door-opening gaps that merge a floor plan into the same open region
+//      as the noise are not distinguished from noise.
+//   5. Existing annotations' wall-knockout mask is rebuilt and excluded from
+//      both the flood and the result.
+//   6. Unsafe shell is widened via a bounded BFS (RW._healBarrierMargin) so
+//      thick barriers are protected through their full width, not just a
+//      1px outer skin.
 //
-// Six failure modes found live, in order:
-//   1. Connected-component veto (flood all touching wall into one blob, veto
-//      the WHOLE blob if any part touches something unsafe) was fatally
-//      coarse — dimension/leader lines touch the real perimeter often enough
-//      that nearly all interior noise ends up wall-connected to the true
-//      boundary into one network. Measured: a real region's wall split into
-//      4 components, the largest 65% of all wall in its bbox, ALL vetoed.
-//   2. Per-pixel safety test (fixed the veto problem) but bounded by a small
-//      padding around the region's own OPEN-pixel bounding box — wrong on a
-//      hatch-heavy job, where that open "clearing" can sit deep inside a much
-//      larger connected mass of hatch fill. The padding never reached real
-//      exterior, so 100% of wall in the window came back "safe."
-//   3. Unbounded reachability flood (let the search stop naturally at real
-//      barriers instead of guessing a padding size) fixed #2, but on a page
-//      with only ONE included region, there was nothing nearby to fence the
-//      search in — it explored ~2.65M pixels, nearly the whole non-blank
-//      page, before hitting a real barrier anywhere.
-//   4. Added a size threshold so a neighboring non-included area only counts
-//      as "protected" if it's bigger than a tunable hole-size cutoff (a
-//      building's room is not "tiny noise" the way a letter's hole is) — but
-//      this can't help when the "room" isn't even a separate label to begin
-//      with: door-opening gaps in the linework had already merged a real
-//      building's floor plan into the SAME connected open region as the
-//      pavement around it, so its walls were floating inside one blob with
-//      no second region to be "not merged with" in the first place. From
-//      pure wall/label topology, that's indistinguishable from actual noise.
-//   5. (Fixed, currently shipped.) Existing committed annotations get knocked
-//      out into RW.wall as uniform filled interior (the same step
-//      RW.extract() already does so they're never re-proposed as candidate
-//      regions) — but that knockout doesn't distinguish itself from
-//      text/hatch wall, so a wall pixel deep inside an already-annotated area
-//      looked exactly as "safe" as real noise. Healing tried to erase into
-//      already-completed territory. Fixed by rebuilding the same
-//      annotation-knockout mask here and hard-excluding it, both from the
-//      reachability flood (never steps into it) and as a final filter on the
-//      result (belt-and-suspenders, given the history above).
-//   6. (Fixed, currently shipped.) The original per-pixel safety test only
-//      checks each wall pixel's OWN immediate 1-hop neighbors — correct for
-//      thin (1-2px) barriers, since every pixel in a thin line directly
-//      touches the outside. But on a THICK drawn barrier (a wide stroke),
-//      only its outer ~1px skin touches anything unsafe this way; pixels in
-//      the middle of the thickness are surrounded by more of the same wall
-//      on all sides and look exactly like real interior noise. Confirmed
-//      live: a thick black boundary line got partially hollowed out through
-//      its middle — never merges two regions (so the OLD test wasn't
-//      "wrong" by its own rule), but visibly damages a real boundary and
-//      would corrupt the commit contour along that stretch. Fixed by finding
-//      the "unsafe shell" (wall pixels whose own neighbor is unsafe, i.e.
-//      exactly what the old test flagged as protected) and widening it by a
-//      bounded multi-source BFS (RW._healBarrierMargin, default ~12px at
-//      2592-baseline resolution) through reachable wall only.
-//
-//      IMPORTANT, verified with a synthetic test after shipping: this only
-//      protects HALF as deep as it looks like it should for the most common
-//      case — a region's own boundary line facing a *different* region or
-//      exterior. The near face of that line (the side touching the region's
-//      own interior) never starts "unsafe" — crossing into your own open
-//      space is never foreign — so the BFS only ever expands inward from the
-//      single far face. A 16px-thick barrier in testing needed
-//      RW._healBarrierMargin ~= 16 (the FULL thickness) to be fully
-//      protected; margin=10 (~2/3 of the thickness) still left ~23% of it
-//      erodable. The "up to 2x margin thick, expansion from both sides meet
-//      in the middle" framing only holds when NEITHER face of the wall
-//      segment is the target region's own interior, which is the rare case,
-//      not the norm. Practical upshot: set barrier≥ to roughly the visible
-//      line's FULL pixel thickness, not half of it. (Genuine deep-interior
-//      noise, far from any real boundary, is unaffected by this and still
-//      gets flagged correctly at any margin setting — confirmed in the same
-//      test.)
-//
-// The throughline: this approach can only ever reason from wall/label
-// topology, and real drawings have cases (structure connected via a small
-// gap, hatch-heavy jobs with no nearby second region, already-annotated
-// territory with no distinguishing marker) where topology alone doesn't
-// encode the distinction a human makes by recognizing the content.
+// RW._healBarrierMargin expands only inward from a region's own outer wall
+// face, not both sides. Set barrier≥ to the line's full visible thickness,
+// not half.
 (function(){
   const RW = window.__RW;
-  // Needs v26 (rw_brushpoly.js), not just v23 — the cross-disarm wrap below
-  // reads RW.setMaskMode2, which doesn't exist until rw_brushpoly.js has
-  // loaded. Loading this module before that point silently skipped the wrap
-  // (the `if (RW.setMaskMode2)` guard just found nothing to wrap) rather than
-  // erroring, so arming Poly2/Brush didn't disarm the heal brush as intended
-  // — confirmed live. Gating on v26 turns that into a loud, obvious bail
-  // instead of a silent partial failure if the load order ever regresses.
+  // Needs v26 (rw_brushpoly.js): the cross-disarm wrap below reads
+  // RW.setMaskMode2, which doesn't exist until then. Without this gate the
+  // wrap silently no-ops instead of erroring, and Poly2/Brush stop disarming
+  // the heal brush — confirmed live.
   if (!RW || !RW.v26) return 'need v2.6 (rw_brushpoly.js) first';
   if (RW.v3) return 'v3 already installed';
   RW.v3 = true;
@@ -115,31 +38,8 @@
   //       path of only wall/same-region pixels (never crossing into exterior,
   //       a different included region, or a tiny excluded speck), and
   //   (b) SAFE — none of the pixel's own 4-neighbors are true unenclosed
-  //       exterior or a different included region (a purely local, per-pixel
-  //       test, not a connected-component veto).
-  //
-  // Earlier attempts got both parts wrong in different ways:
-  //  - v1 used connected-component flood + "if ANY part of the component ever
-  //    touches something bad, veto the WHOLE component." Fatally coarse:
-  //    dimension/leader lines and hatch marks routinely touch the real
-  //    perimeter by a pixel or two, so nearly all interior noise ended up
-  //    wall-connected to the true boundary into one giant network — measured
-  //    live, a real region's wall pixels formed 4 components, the largest
-  //    65% of all wall pixels in its bbox, ALL vetoed together.
-  //  - v2 (per-pixel test alone, bounded by a small fixed padding around the
-  //    region's own open-pixel bounding box) fixed the veto problem but
-  //    revealed a second one: on a hatch-heavy job, a region's own open
-  //    pixels can be a small clearing deeply embedded in a much larger mass
-  //    of dense hatch fill, so a small fixed pad never reaches anywhere near
-  //    the true exterior-facing edge — measured live, 100% of wall in the
-  //    padded window came back "safe" because NONE of it was close enough to
-  //    touch real exterior within that window at all.
-  //
-  // Bounding by REACHABILITY (rather than guessing a padding size) fixes
-  // this: the flood naturally stops wherever it would have to cross into
-  // exterior/a different region/a tiny speck, however far that actually is,
-  // and the per-pixel test (applied only within that reachable set) is what
-  // avoids the whole-component veto bug.
+  //       exterior or a different included region (per-pixel, not a
+  //       connected-component veto — see failure modes 1-2 above).
   RW._computeInteriorNoise = function(gids){
     const {W,H,labels,regions,wall} = RW;
     const memberIds = new Set(regions.filter(r=>gids.has(r.group)).map(r=>r.id));
@@ -147,19 +47,11 @@
 
     const isSameRegion = i => { const l=labels[i]; return l>=0 && memberIds.has(l); };
 
-    // A neighboring open area counts as "protected" (never merge into it) if
-    // it's either already included, OR bigger than RW._healNoiseHoleMax — a
-    // dedicated, separately-tunable threshold for "how big can a hole be
-    // before it's a real feature rather than negligible noise." This is
-    // deliberately NOT the same value as RW._areaFloor: that one answers "is
-    // this worth showing as a selectable candidate region" and is tuned for
-    // that purpose (session default seen live: 6026px). A building's floor
-    // plan drawn inside a large pavement region has its own room interiors as
-    // separate labeled areas — confirmed live, several rooms measured
-    // 868–5296px, all comfortably BELOW that area-floor value, so reusing it
-    // here failed to protect them: real rooms and text-glyph holes both
-    // count as "not included," but they're very different sizes, and a hole
-    // threshold needs to sit well below real-feature size, not above it.
+    // A neighboring open area is "protected" if included, OR bigger than
+    // RW._healNoiseHoleMax — deliberately separate from RW._areaFloor (that
+    // tunes candidate-region selectability, not noise-vs-feature size): real
+    // rooms measured live at 868-5296px, well below a typical area-floor of
+    // 6026px, so reusing area-floor here failed to protect them.
     const holeMax = RW._healNoiseHoleMax != null ? RW._healNoiseHoleMax : Math.round(300*(RW.W/2592));
     const isProtectedRegion = i => {
       const l = labels[i];
@@ -168,18 +60,12 @@
       return !!r && (r.included || r.size > holeMax);
     };
 
-    // Existing committed annotations get knocked out into RW.wall as filled
-    // interiors (the same step RW.extract() already does, so they never get
-    // re-proposed as candidate regions) — but that knockout is just uniform
-    // wall, with nothing distinguishing "wall because an already-completed
-    // annotation lives here" from "wall because it's text/hatch." A wall
-    // pixel deep inside an existing annotation is surrounded by more wall on
-    // all sides, never touching a labeled region or true exterior, so it
-    // looked exactly as "safe" as real noise — confirmed live: healing tried
-    // to erase into already-annotated territory. Rebuilding that same
-    // knockout mask here (mirroring RW.extract()'s own logic) and hard-
-    // excluding it from the result fixes this directly, regardless of what
-    // the reachability/per-pixel checks above conclude.
+    // Existing annotations get knocked out into RW.wall as filled interior
+    // (mirroring RW.extract()) but that knockout is indistinguishable from
+    // text/hatch wall by topology alone — a wall pixel deep inside an
+    // existing annotation looked "safe" too (failure mode 5). Rebuild the
+    // same knockout mask here and hard-exclude it from both the flood and
+    // the result.
     const annotationMask = new Uint8Array(W*H);
     if (typeof annotationState !== 'undefined'){
       const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
@@ -187,11 +73,10 @@
       actx.fillStyle = '#000';
       for (const a of annotationState.annotations){
         if (a._hidden || a.is_void) continue;
-        // Array.isArray, not just !pts.length — a bbox-type annotation stores
-        // coordinates as {x,y,width,height}, not a point array; that object
-        // has no .length at all, and `undefined < 3` is false in JS, so the
-        // old `pts.length<3` guard let it silently through to pts.forEach(),
-        // which doesn't exist on a plain object. Confirmed live.
+        // bbox annotations store {x,y,width,height}, not a point array — the
+        // old `pts.length<3` guard let it through (`undefined<3` is false)
+        // to a pts.forEach() that doesn't exist on a plain object. Confirmed
+        // live; Array.isArray guards it now.
         const pts = a.coordinates; if (!Array.isArray(pts) || pts.length<3) continue;
         actx.beginPath();
         pts.forEach((p,idx)=>{ const X=p.x*W, Y=p.y*H; idx?actx.lineTo(X,Y):actx.moveTo(X,Y); });
@@ -221,11 +106,9 @@
     }
 
     // Reachability flood: from the region's own open pixels, step only into
-    // more same-region-open or wall pixels — never into exterior, a
-    // different included region, or a tiny speck (those are natural stopping
-    // barriers, not something to tunnel past). Everything this reaches is
-    // "relevant" wall; anything it can't reach is irrelevant to this region
-    // and left alone regardless of how the per-pixel test alone would judge it.
+    // wall/same-region pixels — exterior, other included regions, and tiny
+    // specks are natural stopping barriers. Everything reached is "relevant"
+    // wall; anything unreached is left alone.
     const reachableWall = new Uint8Array(W*H);
     const seenReach = new Uint8Array(W*H);
     const q2 = [];
@@ -247,17 +130,10 @@
       }
     }
 
-    // Per-pixel safety test, restricted to the reachable wall set. This finds
-    // the "unsafe shell" — reachable wall pixels whose own immediate neighbor
-    // is exterior/protected/annotation. On a THICK barrier (a wide drawn
-    // line), only its outer ~1px skin touches something unsafe this way —
-    // pixels in the middle of the thickness are surrounded by more of the
-    // same wall on all sides, so they look exactly like real interior noise
-    // and get flagged too. Confirmed live: a thick black boundary line got
-    // partially hollowed out through its middle, leaving thin slivers of the
-    // original line on both edges — technically never merges two regions,
-    // but visibly damages a real boundary and would corrupt the commit
-    // contour along exactly that stretch.
+    // Per-pixel safety test restricted to reachable wall: flags reachable
+    // wall pixels whose immediate neighbor is exterior/protected/annotation
+    // (the "unsafe shell"). On a thick barrier only the outer ~1px skin
+    // triggers this — see failure mode 6 above.
     const unsafeShell = new Uint8Array(W*H);
     for (let i=0;i<W*H;i++){
       if (!reachableWall[i] || annotationMask[i]) continue;
@@ -270,19 +146,10 @@
       if (unsafe) unsafeShell[i]=1;
     }
 
-    // Widen that shell by a bounded margin (RW._healBarrierMargin, default
-    // ~12px at this job's resolution) via a multi-source BFS through
-    // reachable wall pixels only — this "thickens" protection to cover
-    // realistic barrier widths. NOTE: for the common case (a region's own
-    // boundary facing a different region/exterior), only the OUTER face ever
-    // starts in unsafeShell — the inner face touches the region's own
-    // interior, which is never "foreign" — so expansion only reaches inward
-    // from that single face. Set the margin to roughly the line's FULL
-    // pixel thickness, not half; verified live that margin=thickness/2 still
-    // leaves a real fraction of the line erodable. Genuinely deep interior
-    // noise (further than the margin from any real boundary) still gets
-    // flagged regardless. Bounded and cheap: it only walks the already-small
-    // reachable-wall set, not the whole image.
+    // Widen the unsafe shell by RW._healBarrierMargin via bounded BFS through
+    // reachable wall only — protects realistic barrier widths. One-sided
+    // only (see header): expansion only reaches inward from the barrier's
+    // outer face, so set the margin to the line's FULL thickness, not half.
     const margin = RW._healBarrierMargin != null ? RW._healBarrierMargin : Math.max(4, Math.round(12*(RW.W/2592)));
     const protectedExpanded = new Uint8Array(W*H);
     {
@@ -379,13 +246,19 @@
   /* ---------- panel controls ---------- */
   const bar = (document.getElementById('rw-pick') || {}).parentNode;
   if (bar && !document.getElementById('rw-heal-btn')){
+    // Wrapped in a span so rw_panelsections.js can relocate the whole Heal
+    // cluster as one unit (same idiom as #rw-pipe-group/#rw-textdetect-group).
+    const group = document.createElement('span');
+    group.id = 'rw-heal-group';
+    group.style.cssText = 'display:inline-flex;gap:4px;align-items:center;';
+
     const b = document.createElement('button');
     b.id = 'rw-heal-btn';
     b.title = 'Preview interior noise (text/hatch/dimension marks) inside the SELECTED region(s) that\'s safe to erase without merging with any other region. Pick a region first. Detection only until you Apply Heal.';
     b.style.cssText = 'font-size:11px;padding:2px 6px;';
     b.innerText = 'Heal Interior?';
     b.onclick = () => RW.toggleHealPreview();
-    bar.appendChild(b);
+    group.appendChild(b);
 
     const ab = document.createElement('button');
     ab.id = 'rw-heal-apply-btn';
@@ -393,21 +266,21 @@
     ab.style.cssText = 'font-size:11px;padding:2px 6px;display:none;background:rgba(255,140,0,0.25);';
     ab.innerText = 'Apply Heal';
     ab.onclick = () => RW.applyHeal();
-    bar.appendChild(ab);
+    group.appendChild(ab);
 
     const label = document.createElement('span');
     label.innerText = 'hole≤'; label.style.cssText = 'font-size:10px;opacity:0.7;margin-left:4px;';
-    bar.appendChild(label);
+    group.appendChild(label);
     const holeInp = document.createElement('input');
+    holeInp.id = 'rw-heal-hole';
     holeInp.type = 'number';
     holeInp.value = RW._healNoiseHoleMax != null ? RW._healNoiseHoleMax : Math.round(300*(RW.W/2592));
     holeInp.title = 'Max pixel size for a non-included area to still count as a negligible hole (safe to merge) rather than a real feature (protected). Separate from the area-floor input — that one is for candidate regions, this one is for "how big is too big to be noise."';
     holeInp.style.cssText = 'font-size:11px;padding:1px 4px;width:52px;text-align:right;';
     let holeDebounce = null;
     holeInp.oninput = function(){
-      // live preview while typing/spinning, debounced — _computeInteriorNoise
-      // is a real O(W×H)-ish recompute (measured 200ms-1.5s live), so firing
-      // on every keystroke would make typing feel laggy rather than "live."
+      // debounced — _computeInteriorNoise is O(W×H)-ish (200ms-1.5s live),
+      // so firing on every keystroke would feel laggy rather than "live."
       clearTimeout(holeDebounce);
       const v = parseInt(holeInp.value, 10);
       if (isNaN(v)) return;
@@ -420,12 +293,13 @@
         }
       }, 250);
     };
-    bar.appendChild(holeInp);
+    group.appendChild(holeInp);
 
     const label3 = document.createElement('span');
     label3.innerText = 'barrier≥'; label3.style.cssText = 'font-size:10px;opacity:0.7;margin-left:4px;';
-    bar.appendChild(label3);
+    group.appendChild(label3);
     const marginInp = document.createElement('input');
+    marginInp.id = 'rw-heal-margin';
     marginInp.type = 'number';
     marginInp.value = RW._healBarrierMargin != null ? RW._healBarrierMargin : Math.max(4, Math.round(12*(RW.W/2592)));
     marginInp.title = 'Protection margin (mask px) around any real barrier — raise this if a thick boundary line is getting partially eaten through its middle. Set this to roughly the FULL pixel thickness of the line you see (not half) — protection only expands inward from the line\'s outer face, not from both sides at once.';
@@ -444,19 +318,18 @@
         }
       }, 250);
     };
-    bar.appendChild(marginInp);
+    group.appendChild(marginInp);
+
+    bar.appendChild(group);
   }
 
   /* ---------- manual brush correction for the heal preview ---------- */
-  // The topology-based detector will sometimes get it wrong in ways no
-  // threshold can fix (e.g. an isolated solid symbol swept up as "noise"
-  // because it never happens to border true exterior/a protected region
-  // within reach — confirmed live). Rather than chase every such case
-  // algorithmically, let the user paint directly onto RW._healNoiseMask
-  // before Apply Heal — the same interaction as the existing Brush tool
-  // (rw_brushpoly.js), just targeting the heal mask instead of RW.wall.
-  // Requires a preview to already exist; arms it automatically (computing it
-  // if needed) if a region is already selected.
+  // The topology-based detector can still be wrong in cases no threshold
+  // fixes (e.g. an isolated solid symbol that never borders exterior/a
+  // protected region within reach — confirmed live). Let the user paint
+  // directly onto RW._healNoiseMask before Apply Heal, same interaction as
+  // the Brush tool (rw_brushpoly.js). Requires a preview to already exist;
+  // arms it automatically if a region is already selected.
   const ac = document.getElementById('annotation-canvas');
   RW.healBrushMode = false;
   RW.healBrushAction = 'add'; // 'add' — mark more as noise; 'remove' — protect/un-mark
@@ -546,13 +419,10 @@
     RW._renderHealBrushCursor(e.clientX, e.clientY);
   }, {capture:true, passive:false});
 
-  // RW.__tabHeld is a shared flag, but rw_brushpoly.js's own Tab handler only
-  // ever sets it when RW.maskMode2==='brush' (the *original* Brush tool's own
-  // mode) — pressing Tab while THIS tool is armed instead never set it, so
-  // the wheel handler above always bailed out immediately. Cross-disarm
-  // already guarantees only one of these tools is active at a time, so
-  // sharing the flag is safe: extend the same keydown/keyup pair to also
-  // fire for RW.healBrushMode, rather than introducing a second flag.
+  // RW.__tabHeld is shared, but rw_brushpoly.js's Tab handler only sets it
+  // when RW.maskMode2==='brush' — extend the same keydown/keyup pair to also
+  // fire for RW.healBrushMode (cross-disarm guarantees only one tool is
+  // active at a time, so sharing the flag is safe).
   window.addEventListener('keydown', function(e){
     if (e.key==='Tab' && RW.healBrushMode){
       RW.__tabHeld = true;
@@ -572,10 +442,8 @@
     }
   }, true);
 
-  // Reactive cross-disarm: wrap the shared functions Rect/Poly2/Brush already
-  // call right after arming themselves (from BOTH their keydown handler and
-  // their panel button's onclick — one shared touchpoint covers both input
-  // paths, rather than only catching the keyboard shortcut).
+  // Reactive cross-disarm: wrap the shared arm functions Rect/Poly2/Brush
+  // already call, so both keyboard and panel-button arming disarm this tool.
   if (RW._syncRectBtn){
     const origSyncRectBtn = RW._syncRectBtn;
     RW._syncRectBtn = function(){

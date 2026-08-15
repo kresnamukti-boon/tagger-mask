@@ -87,7 +87,6 @@
     const [nx,ny]=RW._toNorm(e.clientX,e.clientY);
     if (RW.maskMode2==='poly2'){
       RW._renderPreview({x:e.clientX,y:e.clientY});
-      // Show polygon area (current vertices + cursor position)
       if (RW._polyPtsN && RW._polyPtsN.length >= 2){
         const pts = RW._polyPtsN.concat([[nx,ny]]);
         RW._showAreaHint(RW._polyArea(pts));
@@ -101,7 +100,6 @@
         RW._paintDisk(nx*RW.W, ny*RW.H, RW.brushR, val);
       }
       RW._renderBrushCursor(e.clientX, e.clientY);
-      // Show approximate brush area: stroke length × diameter
       if (RW._brushDown && RW._brushStroke && RW._brushStroke.length > 1){
         const strokes = RW._brushStroke.length;
         const px = Math.round(strokes * RW.brushR * 2 * RW.brushR * 2);
@@ -120,7 +118,6 @@
       if (RW.maskAction==='add'){
         const {W,H,labels,regions,wall} = RW;
         const r = RW.brushR;
-        // Compute bbox of the brush stroke, build skip mask for existing regions
         let bx0=W, by0=H, bx1=0, by1=0;
         for (const [snx,sny] of RW._brushStroke){
           const mx=Math.round(snx*W), my=Math.round(sny*H);
@@ -178,7 +175,6 @@
       const mpts = RW._polyPtsN.map(([nx,ny])=>[nx*RW.W, ny*RW.H]);
       if (RW.maskAction==='add'){
         const {W,H,labels,regions,wall} = RW;
-        // Compute bbox of the polygon, build skip mask for existing regions
         let bx0=W, by0=H, bx1=0, by1=0;
         for (const [x,y] of mpts){
           if (Math.round(x)-3<bx0) bx0=Math.round(x)-3;
@@ -204,7 +200,7 @@
         // Clear interior of the inner polygon, then restore skip pixels
         RW._paintPoly(inner, 0);
         for (let y=by0;y<=by1;y++) for (let x=bx0;x<=bx1;x++)
-          if (skip[y*W+x]) wall[y*W+x]=1;  // restore existing region pixels as wall
+          if (skip[y*W+x]) wall[y*W+x]=1;
       } else if (RW.maskAction==='open'){
         // open mode: seal perimeter gaps, then convert interior walls to non-wall
         RW._paintPolylineGap(mpts);
@@ -284,8 +280,7 @@
     let inner = '<circle cx="'+px+'" cy="'+py+'" r="'+pr+'" fill="none" stroke="'+col+'" stroke-width="'+sw+'" stroke-dasharray="8"/>';
     if (RW._brushDown && RW._brushStroke && RW._brushStroke.length){
       const fill = RW.maskAction==='add' ? 'rgba(50,205,50,0.35)' : (RW.maskAction==='block' ? 'rgba(255,120,0,0.30)' : 'rgba(60,180,255,0.30)');
-      // Render as a single thick polyline instead of N individual circles
-      // (1 DOM node instead of potentially hundreds — huge perf win for long strokes)
+      // Single thick polyline, not N circles
       const ptsStr = RW._brushStroke.map(([snx,sny])=>{
         const [spx,spy]=RW._toPx(snx,sny);
         return spx+','+spy;

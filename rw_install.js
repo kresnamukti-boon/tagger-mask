@@ -8,42 +8,32 @@
   /* ---------- segmentation ---------- */
   RW.extract = function(){
     const src = document.getElementById('pdf-canvas');
-    // scale extraction resolution to native canvas size so thin lines survive
+    // scale extraction resolution to native canvas size
     let {W,H} = RW;
     const nw = src.width, nh = src.height;
     if (nw && nh && (nw > W*1.3 || nh > H*1.3)){
       W = RW.W = Math.min(nw, 3888);
       H = RW.H = Math.round(W * (nh/nw));
-      // clamp region size threshold proportionally
       RW._areaFloor = Math.round(2500 * (W*H) / (2592*1728));
     }
     const areaFloor = RW._areaFloor != null ? RW._areaFloor : 2500;
-    // ... rest of extraction
     const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
     const ctx = cv.getContext('2d');
     ctx.drawImage(src, 0, 0, W, H);
     const d = ctx.getImageData(0,0,W,H).data;
     let wall = new Uint8Array(W*H);
     for (let i=0;i<W*H;i++){
-      // use minimum RGB channel to catch colored lines (yellow, green, blue)
-      // on white background (255,255,255 → min=255). any color drop = line
+      // min RGB channel: catches colored (yellow/green/blue) lines too
       const minChan = Math.min(d[i*4], d[i*4+1], d[i*4+2]);
       if (minChan < 200) wall[i]=1;
     }
-    // no morphological pass — raw luminance only.
-    // mask boundary sits at line edge. curves follow pixel data directly.
+    // no morphological pass
     // knock out existing annotations
     const c2 = document.createElement('canvas'); c2.width=W; c2.height=H;
     const x2 = c2.getContext('2d');
     for (const a of annotationState.annotations){
       if (a._hidden || a.is_void) continue;
-      // Array.isArray, not just !pts.length — a bbox-type annotation stores
-      // coordinates as {x,y,width,height}, not a point array. This specific
-      // check (!pts.length) happens to catch that case since `undefined`
-      // negates to true, but rw_healinterior.js/rw_textdetect.js used
-      // `pts.length<3` instead, which does NOT catch it (`undefined < 3` is
-      // false in JS) and crashed on .forEach — confirmed live. Using
-      // Array.isArray here too for real defense-in-depth, not just luck.
+      // Array.isArray guard: bbox-type annotations store {x,y,width,height}, not a point array
       const pts = a.coordinates; if (!Array.isArray(pts) || !pts.length) continue;
       x2.fillStyle='#000';
       x2.beginPath();
@@ -248,7 +238,7 @@
     RW.renderList(); RW.renderOverlay();
   };
 
-  /* ---------- commit preview: raw contours of selected groups ---------- */
+  /* ---------- commit preview ---------- */
   RW._rawContour = function(gid){
     const {W,H,labels,regions} = RW;
     const memberIds = new Set(regions.filter(r=>r.group===gid).map(r=>r.id));
@@ -407,10 +397,8 @@
     if (e.ctrlKey||e.metaKey||e.altKey) return;
     if (e.key==='p'||e.key==='P'){ e.preventDefault(); e.stopPropagation(); RW.setPick(!RW.pickMode); }
     if (e.key==='k'||e.key==='K'){ e.preventDefault(); e.stopPropagation(); RW.setCut(true); }
-    // Delete/Backspace: remove selected regions from the mask (pick mode)
     if ((e.key==='Delete'||e.key==='Backspace') && RW.pickMode && RW.selected.size){
       e.preventDefault(); e.stopImmediatePropagation();
-      // paint all pixels of selected groups as wall, then relabel
       for (const sv of RW.selected){
         for (let i=0;i<RW.W*RW.H;i++){
           if (RW.labels[i]>=0 && RW.regions[RW.labels[i]] && RW.regions[RW.labels[i]].group===sv){

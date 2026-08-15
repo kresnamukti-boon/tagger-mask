@@ -1,11 +1,4 @@
-// RW v2.3 — undo system for mask tools.
-// Load AFTER rw_stable.js (needs v2.2).
-//
-// Behavior:
-// - Poly: Backspace removes last vertex; Escape clears in-progress vertices FIRST,
-//   second Escape closes the tool; double-click commits.
-// - Block/Open rect strokes, Poly commits, Cut, Merge: snapshot-based undo stack.
-//   Panel "Undo" button or backtick (`) key reverts the last edit.
+// RW v2.3 — undo system for mask tools. Load AFTER rw_stable.js (needs v2.2).
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v22) return 'need v2.2 first';
@@ -13,7 +6,6 @@
   RW.v23 = true;
   const ac = document.getElementById('annotation-canvas');
 
-  /* ---------- undo stack ---------- */
   RW._undoStack = [];
   RW._snapshot = function(label){
     RW._undoStack.push({
@@ -44,16 +36,14 @@
     if (b) b.innerText = 'Undo (`)' + (RW._undoStack.length ? ' '+RW._undoStack.length : '');
   };
 
-  /* ---------- snapshot triggers (window-level capture = fires before element handlers) ---------- */
-  // rect strokes: snapshot on stroke-start mousedown
+  // mousedown capture (window-level)
   window.addEventListener('mousedown', function(e){
     if (RW._previewV!==4 || !RW.maskMode) return;
     if (e.target !== ac && !ac.contains(e.target)) return;
     if (RW.maskMode==='block' || RW.maskMode==='open' || RW.maskMode==='rect') RW._snapshot(RW.maskMode);
   }, true);
 
-  // poly commit: snapshot via _paintPoly wrapper (fires on dblclick commit only,
-  // because v2.2's dblclick handler is the sole caller with a full polygon)
+  // _paintPoly wrapper: snapshots once per commit
   const origPaintPoly = RW._paintPoly;
   let polySnapArmed = false;
   RW._paintPoly = function(pts, val){
@@ -67,7 +57,6 @@
     return origPaintPoly.apply(RW, arguments);
   };
 
-  // cut + merge
   const origApplyCut = RW.applyCut;
   RW.applyCut = function(){
     RW._snapshot('cut');
@@ -79,7 +68,7 @@
     return origMerge.apply(RW, arguments);
   };
 
-  /* ---------- poly vertex editing (window capture beats older document handlers) ---------- */
+  // keydown capture (window-level)
   window.addEventListener('keydown', function(e){
     const t = e.target;
     if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
@@ -103,7 +92,6 @@
     }
   }, true);
 
-  /* ---------- undo trigger: backtick + panel button ---------- */
   window.addEventListener('keydown', function(e){
     const t = e.target;
     if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;

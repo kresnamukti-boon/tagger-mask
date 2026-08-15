@@ -1,42 +1,21 @@
 // RW v2.7 — vertex snapping for the Poly2 tool.
-// Load AFTER rw_brushpoly.js (needs v2.6). Snaps freshly-placed Poly2 vertices
-// (mousedown) and the live preview point (mousemove) to nearby line
-// endpoints/intersections detected on the wall bitmap, so polygons lock onto
-// the actual linework instead of free-floating pixel positions.
+// Load AFTER rw_brushpoly.js (needs v2.6). Snaps Poly2 vertices (mousedown)
+// and the live preview point (mousemove) to nearby line endpoints/
+// intersections on the wall bitmap, or to any included region's outline.
 //
-// Pipeline (recomputed lazily, only when the wall bitmap has changed since
-// the last build — see RW._snapDirty):
-//   1. Density-prefilter RW.wall (RW._buildThinMask) via an integral image:
-//      any wall pixel whose local window is mostly wall gets excluded before
-//      skeletonizing. This matters a lot in practice — pavement-hatch fill
-//      routinely marks 30%+ of a whole drawing as "wall", and (a) that's WAY
-//      too many pixels to skeletonize synchronously without hanging the tab,
-//      and (b) hatching doesn't have meaningful line endpoints/junctions
-//      anyway, so it would just produce junk candidates. Only thin, line-like
-//      wall survives into step 2.
-//   2. Skeletonize the filtered mask (Zhang-Suen thinning, foreground-only
-//      active list so cost scales with surviving-pixel count, not full W×H).
-//   3. Classify skeleton pixels by 8-neighbor count: 1 neighbor = endpoint,
-//      3+ neighbors = junction (branch point). 2 = ordinary skeleton point,
-//      not a candidate.
-//   4. Cluster nearby candidates (skeletonization often yields a few adjacent
-//      pixels per real junction) into single snap points; junction wins over
-//      endpoint when a cluster mixes both kinds.
-//   5. Separately, add every included region's boundary pixel as an
-//      uncluustered 'edge' snap candidate (RW._buildEdgePoints) — this is what
-//      lets a vertex slide along any point of a region outline, not just its
-//      corners. Detected in a single O(W×H) pass over RW.labels (checking each
-//      included-region pixel's 4-neighbors for a different group/background),
-//      NOT by calling the existing RW._rawContour once per region — that
-//      function re-scans the entire W×H image on every call (it was written
-//      to trace 1-2 selected groups for a commit preview), so calling it per
-//      region here would be O(W×H × region count) and hang far worse than the
-//      density-fill issue this file already exists to avoid.
-//   6. Index the resulting points (clustered endpoints/junctions + raw edge
-//      pixels together) in a bucket grid for fast nearest-point lookup. The
-//      catch radius is recomputed per-query in current screen px
-//      (RW._snapCatchPx), so the snap feel stays constant across zoom levels
-//      the same way stroke widths do elsewhere in the workbench.
+// Pipeline (rebuilt lazily — only when RW._snapDirty, on the next snap query):
+//   1. Density-prefilter RW.wall (RW._buildThinMask, integral image):
+//      excludes wall pixels whose local window is mostly wall before
+//      skeletonizing.
+//   2. Skeletonize (Zhang-Suen thinning, active-list based).
+//   3. Classify by 8-neighbor count: 1 = endpoint, 3+ = junction, 2 = not a
+//      candidate.
+//   4. Cluster nearby candidates into one point per real junction (junction
+//      wins over endpoint in a mixed cluster).
+//   5. RW._buildEdgePoints adds every included region's boundary pixel as its
+//      own unclustered 'edge' candidate, via one O(W×H) pass over RW.labels.
+//   6. Index all points in a bucket grid; catch radius (RW._snapCatchPx) is
+//      recomputed per-query to stay ~14 screen px regardless of zoom.
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v26) return 'need v2.6 first';
@@ -49,8 +28,8 @@
   RW._lastSnapHit = null;
 
   /* ---------- 1. density prefilter (integral image) ---------- */
-  // Window radius and density threshold that decide "thin line" vs "fill/hatch".
-  // Scaled to resolution the same way _areaFloor is (2592-px baseline).
+  // Window radius/density threshold deciding "thin line" vs "fill/hatch".
+  // Scaled like _areaFloor (2592-px baseline).
   RW._snapFillRadiusPx = function(){
     return Math.max(4, Math.round(10 * (RW.W/2592)));
   };
@@ -58,8 +37,7 @@
 
   RW._buildThinMask = function(){
     const {W,H,wall} = RW;
-    // Summed-area table, padded with a zero row/col so window queries never
-    // need to special-case the image edges.
+    // Summed-area table, padded with a zero row/col.
     const integ = new Float64Array((W+1)*(H+1));
     for (let y=0;y<H;y++){
       let rowSum=0;
@@ -87,20 +65,15 @@
   };
 
   /* ---------- 2. skeletonize (Zhang-Suen, active-list optimized) ---------- */
-  // seed: the (already density-filtered) mask to thin — dense/hatched pixels
-  // are simply absent from it, so they're invisible to this step entirely.
+  // seed: the already density-filtered mask.
   RW._skeletonize = function(seed){
     const {W,H} = RW;
     const skel = new Uint8Array(seed);
     let active = [];
     for (let i=0;i<W*H;i++) if (skel[i]) active.push(i);
 
-    // 8-neighbors in clockwise order starting north (P2..P9 in the Zhang-Suen
-    // paper): N, NE, E, SE, S, SW, W, NW. Border pixels are skipped entirely
-    // (never deleted, never classified) so no bounds-wrapping logic is needed.
-    // Read as plain locals rather than a per-pixel array/object — this runs
-    // over the active list up to ~120 times, so allocation-per-pixel here is
-    // the difference between sub-second and tens of seconds.
+    // 8-neighbors clockwise from north (P2..P9, Zhang-Suen paper). Border
+    // pixels are skipped (never deleted/classified).
     let changed = true, iter = 0;
     while (changed && iter < 60){
       changed = false; iter++;
@@ -163,9 +136,8 @@
   };
 
   /* ---------- 4. cluster nearby candidates ---------- */
-  // NOTE: a cluster is bucketed by its FIRST point's position; later merges
-  // can drift its centroid a little without re-bucketing. Harmless at the
-  // small merge radii used here (a few mask px).
+  // A cluster is bucketed by its FIRST point's position; later merges can
+  // drift its centroid without re-bucketing. Harmless at these small merge radii.
   RW._clusterPoints = function(candidates, mergeR){
     const buckets = new Map();
     const clusters = [];
@@ -196,10 +168,9 @@
     return clusters;
   };
 
-  /* ---------- 5. region-outline edge points (single-pass, uncluustered) ---------- */
-  // Every included region's boundary pixel becomes its own snap candidate
-  // (not merged into one point like junctions are) so a vertex can land
-  // anywhere along the outline's length, not just at its corners.
+  /* ---------- 5. region-outline edge points (single-pass, unclustered) ---------- */
+  // Each boundary pixel is its own candidate (not merged like junctions),
+  // so a vertex can land anywhere along the outline, not just at corners.
   RW._buildEdgePoints = function(){
     const {W,H,labels,regions} = RW;
     const edgePts = [];
@@ -230,7 +201,7 @@
     return Math.max(4, Math.round(RW.W/200));
   };
   RW._snapCatchPx = function(){
-    // constant ~14 screen px catch radius regardless of current zoom level
+    // ~14 screen px catch radius regardless of zoom
     const cr = document.getElementById('pdf-container').getBoundingClientRect();
     return (14 / cr.width) * RW.W;
   };
@@ -271,10 +242,8 @@
     const thin = RW._buildThinMask();
     const {skel, pts} = RW._skeletonize(thin);
     const candidates = RW._classifySkeleton(skel, pts);
-    // Cached raw (unclustered) so other features can read local point density —
-    // _clusterPoints below deliberately erases that density (many points -> one),
-    // which is exactly what snapping wants but the opposite of what a
-    // density-based detector (e.g. rw_textdetect.js) needs.
+    // Cached raw (unclustered) so density-based detectors (rw_textdetect.js) can
+    // read local point density — _clusterPoints below deliberately erases it.
     RW._skeletonCandidates = candidates;
     const clustered = RW._clusterPoints(candidates, RW._snapMergeRadiusPx());
     const edgePts = (RW.labels && RW.regions) ? RW._buildEdgePoints() : [];
@@ -283,8 +252,7 @@
     RW._snapDirty = false;
   };
 
-  // nx,ny are normalized page coords. Returns [nx,ny], snapped if a nearby
-  // endpoint/junction was found and snapping is enabled.
+  // nx,ny normalized page coords. Returns [nx,ny], snapped if enabled and a hit was found.
   RW._trySnap = function(nx, ny){
     if (!RW._snapEnabled){ RW._lastSnapHit=null; return [nx, ny]; }
     if (RW._snapDirty) RW._buildSnapPoints();

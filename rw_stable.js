@@ -1,5 +1,5 @@
 // RW v2.2 — pan/zoom-stable previews. Stores in-progress geometry in normalized
-// page coords (0-1 of page), converts to pixels at render time. Supersedes v3 preview handlers.
+// page coords (0-1 of page), converts to pixels at render time.
 (function(){
   const RW = window.__RW;
   if (!RW || (!RW.v21 && !RW.v21r)) return 'need v2.1 first';
@@ -39,8 +39,8 @@
 
   // re-render previews from normalized state (call on mousemove AND on pan/zoom)
   RW._renderPreview = function(cursorClient){
-    const sw = 1.5;   // constant screen px — zoom-invariant
-    const dotR = 2.5;  // constant screen px
+    const sw = 1.5;   // constant screen px
+    const dotR = 2.5;
 
     // poly (legacy 'poly' via maskMode, v2.6 'poly2' via maskMode2)
     const polyActive = (RW.maskMode==='poly') || (RW.maskMode2==='poly2');
@@ -76,7 +76,7 @@
 
   const ac = document.getElementById('annotation-canvas');
 
-  // v4 listeners (guarded by _previewV so older handlers no-op)
+  // v4 listeners (guarded by _previewV)
   ac.addEventListener('mousedown', function(e){
     if (RW._previewV!==4 || !RW.maskMode) return;
     e.stopPropagation(); e.preventDefault();
@@ -136,7 +136,7 @@
     const pl=document.getElementById('rw-polyline'); if(pl) pl.remove();
   }, true);
 
-  // keep preview glued during pan/zoom: re-render on scroll + wheel
+  // re-render preview on scroll
   const sc = document.getElementById('canvas-scroll-container');
   RW.__scrollRaf = false;
   sc.addEventListener('scroll', function(){
@@ -151,11 +151,10 @@
       if (RW._renderCommitPreview) RW._renderCommitPreview();
     });
   }, {passive:true});
-  // wheel = zoom (Ctrl+scroll) — re-render so stroke stays zoom-invariant
+  // wheel = zoom (Ctrl+scroll)
   ac.addEventListener('wheel', function(e){
     if (RW._previewV!==4) return;
     if (!RW.maskMode && !RW.maskMode2) return;
-    // let the app handle the zoom, then re-render after a microtask
     requestAnimationFrame(() => {
       RW._renderPreview(null);
       if (RW._renderPreview2) RW._renderPreview2(null);
@@ -163,7 +162,7 @@
     });
   }, {passive:true});
   document.addEventListener('mouseup', function(){
-    // after any pan gesture ends, re-render so preview re-anchors
+    // re-render preview after mouseup
     if (RW._previewV!==4 || !RW.maskMode) return;
     setTimeout(()=>RW._renderPreview(null), 30);
   }, true);

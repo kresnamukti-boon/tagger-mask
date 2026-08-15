@@ -1,8 +1,6 @@
-// RW v2.1-revised — unified Rect tool (supplants separate Block/Open).
-// Extends live __RW v2. Paints into RW.wall, re-labels preserving groups.
-// Now uses normalized coordinates for pan-stable previews and a single mode
-// 'rect' with RW.maskAction ('block'|'open') toggled via Shift or the button.
-// Depends on _toNorm/_toPx from v2.2 (rw_stable.js must be loaded first).
+// RW v2.1-revised — unified Rect tool.
+// Paints into RW.wall via RW.maskAction (block/open/add), re-labels preserving groups.
+// Uses normalized coords (_toNorm/_toPx from rw_stable.js) for pan-stable previews.
 (function(){
   const RW = window.__RW;
   if (!RW || RW.v !== 2) return 'need RW v2 first';
@@ -10,10 +8,9 @@
   RW.v21r = true;
 
   /* ---------- rect tool: unified block/open via maskAction ---------- */
-  // NOTE: RW.maskAction is 'block' or 'open' (shared with v2.6). Default block.
   if (!('maskAction' in RW)) RW.maskAction = 'block';
 
-  // coordinate helpers (mirror v2.2 — available before rw_stable loads)
+  // coordinate helpers, available before rw_stable loads
   if (!RW._toNorm) RW._toNorm = function(cx,cy){
     const cr = document.getElementById('pdf-container').getBoundingClientRect();
     return [(cx-cr.x)/cr.width, (cy-cr.y)/cr.height];
@@ -65,9 +62,7 @@
     }
   };
 
-  // Bresenham polyline — paints wall=1 only where pixels are currently wall=0
-  // AND are NOT part of an existing included mask region.
-  // (seals gaps in linework without cutting through mask regions)
+  // Bresenham polyline — paints wall=1 only on wall=0 pixels not already part of an included region.
   RW._paintPolylineGap = function(pts){
     const {W,H,wall,labels,regions} = RW;
     function line(x0,y0,x1,y1){
@@ -76,7 +71,6 @@
       let err=dx+dy;
       while(true){
         if (x0>=0&&x0<W&&y0>=0&&y0<H && wall[y0*W+x0]===0){
-          // skip if this pixel belongs to an included mask region
           const l = labels ? labels[y0*W+x0] : -1;
           if (!(l>=0 && regions && regions[l] && regions[l].included)){
             wall[y0*W+x0]=1;
@@ -98,7 +92,7 @@
   RW._relabel = function(){
     if (!RW.labels) RW.extract(); // auto-bootstrap if no mask exists yet
     const {W,H,wall} = RW;
-    // snapshot old regions BEFORE flood — used to protect existing mask from border absorption
+    // snapshot old regions before flood
     const oldRegions = RW.regions;
     const oldLabels = RW.labels;
     const oldCent = {};
@@ -148,13 +142,9 @@
     RW.regions = sizes.map((s,id)=>{ const g=newGroupFor[id]>=0?newGroupFor[id]:id; return {id,size:s.size,included:s.size>=areaFloor,group:g,color:'hsl('+((g*67)%360)+',70%,55%)'}; });
   };
 
-  /* ---------- rect tool: unified block/open via RW.maskAction ---------- */
   const ac = document.getElementById('annotation-canvas');
 
-  // n.b.: v2.6's previewV=5 handles poly2/brush; this module only handles
-  // maskMode==='rect'.  v2.6 keys (N/J) check maskMode2 to avoid conflict.
-  // legacy keys B/O are removed here; unified rect uses B-only gated on
-  // maskMode2 being null (so B does nothing while poly2/brush are armed).
+  // v2.6 handles poly2/brush (maskMode2); this module only handles maskMode==='rect'.
 
   ac.addEventListener('mousedown', function(e){
     if (RW.maskMode!=='rect') return;
@@ -170,7 +160,6 @@
     const en=RW.__rectCurN, st=RW.__rectStartN;
     const px = Math.round(Math.abs(en[0]-st[0])*RW.W * Math.abs(en[1]-st[1])*RW.H);
     RW._showAreaHint(px);
-    // render via the shared preview path from v2.2
     RW._renderPreview2({x:e.clientX,y:e.clientY});
   }, true);
 
@@ -181,8 +170,8 @@
     const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
     const en=RW._toNorm(e.clientX,e.clientY);
     if (RW.maskAction==='add'){
-      // Fill-then-hollow: paint full rect as wall, then shrink 2px and clear interior.
-      // Build skip mask for existing included-region pixels (bbox only, cheap).
+      // Fill-then-hollow: paint rect as wall, then shrink 2px and clear interior,
+      // skipping existing included-region pixels (bbox scope).
       const {W,H,labels,regions,wall} = RW;
       const rx0=s[0]*W, ry0=s[1]*H, rx1=en[0]*W, ry1=en[1]*H;
       const xa=Math.max(0,Math.min(rx0,rx1)|0), xb=Math.min(W-1,Math.max(rx0,rx1)|0);
@@ -229,11 +218,8 @@
     if (RW.maskMode==='rect'){ e.stopPropagation(); e.preventDefault(); }
   }, true);
 
-  /* ---------- rect preview render (plugged into v2.2 renderer) ---------- */
-  // v2.2 _renderPreview only checks maskMode==='poly' — we extend it here
-  // by wrapping into a _renderPreview2 that the v2.2 mousemove calls instead.
+  // Wraps v2.2's _renderPreview (which only handles maskMode==='poly'), adding rect support.
   RW._renderPreview2 = function(cursorClient){
-    // delegate to v2.2 renderer for poly/brush first
     RW._renderPreview(cursorClient);
     if (RW.maskMode!=='rect' || !RW.__rectStartN) return;
     const sw = 1.5;  // constant screen px — zoom-invariant
@@ -252,8 +238,7 @@
     const t=e.target;
     if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.ctrlKey||e.metaKey||e.altKey) return;
-    // never handle when v2.6 tools are armed — BUT disarm them first so the
-    // user can switch directly between rect and poly2/brush in one keystroke
+    // Disarm v2.6 tools first.
     if (e.key==='b'||e.key==='B'){
       if (RW.maskMode2){ RW.setMaskMode2(null); }
       e.preventDefault(); e.stopImmediatePropagation();
@@ -359,13 +344,12 @@
     const ctx = ov.getContext('2d');
     const img = ctx.createImageData(W, H);
     if (RW.wallOverlayState === 1){
-      // Red = wall pixels
       for (let i = 0; i < W*H; i++) {
         if (wall[i] === 1) { img.data[i*4]=255; img.data[i*4+1]=60; img.data[i*4+2]=60; img.data[i*4+3]=220; }
       }
     } else {
-      // Cyan = enclosed white space (not reachable from border → would become regions)
-      // Match _relabel() behavior: existing included region pixels block the flood
+      // Cyan = enclosed space not reached by border flood (would become regions).
+      // Mirrors _relabel()'s flood exactly (incl. included regions as barriers).
       const seen = new Uint8Array(W*H);
       const q = [];
       for (let x=0;x<W;x++){ q.push(x,(H-1)*W+x); }
