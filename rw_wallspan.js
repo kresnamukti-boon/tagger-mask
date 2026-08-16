@@ -276,34 +276,6 @@
     return groups;
   };
 
-  // Even-odd scanline fill into a local mask, mirrored from rw_elbow.js's
-  // rasterizePolyLocal, with an optional dst mask so multiple polygons union
-  // (each pass only sets pixels, never clears).
-  function rasterizePolyLocal(localPts, w, h, dst){
-    const mask = dst || new Uint8Array(w*h);
-    const n = localPts.length;
-    if (n < 3) return mask;
-    let minY = Infinity, maxY = -Infinity;
-    for (const p of localPts){ if (p.y<minY) minY=p.y; if (p.y>maxY) maxY=p.y; }
-    const y0 = Math.max(0, Math.floor(minY)), y1 = Math.min(h-1, Math.ceil(maxY));
-    for (let y=y0; y<=y1; y++){
-      const yc = y + 0.5;
-      const xs = [];
-      for (let i=0;i<n;i++){
-        const a = localPts[i], b = localPts[(i+1)%n];
-        if ((a.y <= yc) === (b.y <= yc)) continue;
-        const t = (yc - a.y) / (b.y - a.y);
-        xs.push(a.x + t*(b.x - a.x));
-      }
-      xs.sort((a,b)=>a-b);
-      for (let i=0;i+1<xs.length;i+=2){
-        const xa = Math.max(0, Math.round(xs[i])), xb = Math.min(w-1, Math.round(xs[i+1])-1);
-        for (let x=xa; x<=xb; x++) mask[y*w+x] = 1;
-      }
-    }
-    return mask;
-  }
-
   // 8-connected flood-fill from (x0,y0); returns the reached-pixel count.
   function flood8(mask, w, h, x0, y0){
     const seen = new Uint8Array(w*h);
@@ -359,11 +331,11 @@
     const mask = new Uint8Array(localW*localH);
 
     function toLocal(nx, ny){
-      return { x: (nx*W - minX)*scale + pad, y: (ny*H - minY)*scale + pad };
+      return [ (nx*W - minX)*scale + pad, (ny*H - minY)*scale + pad ];
     }
     for (const seg of segs){
       const localPts = seg.ribbon.map(p => toLocal(p.x, p.y));
-      rasterizePolyLocal(localPts, localW, localH, mask);
+      RW._rasterizePolyLocal(localPts, localW, localH, mask);
     }
 
     let seedIdx = -1, total = 0;

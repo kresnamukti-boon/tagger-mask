@@ -167,27 +167,6 @@
     return { minArea: Math.max(1, Math.round(2.5 * width * width)) };
   };
 
-  // Even-odd scanline fill of a polygon (local raster px) into a fresh mask.
-  function rasterizePolyLocal(localPts, w, h){
-    const mask = new Uint8Array(w*h);
-    let minY=Infinity, maxY=-Infinity;
-    for (const [,y] of localPts){ if (y<minY) minY=y; if (y>maxY) maxY=y; }
-    minY = Math.max(0, Math.floor(minY)); maxY = Math.min(h-1, Math.ceil(maxY));
-    for (let y=minY; y<=maxY; y++){
-      const xs=[];
-      for (let i=0,j=localPts.length-1; i<localPts.length; j=i++){
-        const [xi,yi]=localPts[i], [xj,yj]=localPts[j];
-        if ((yi>y)!==(yj>y)) xs.push(xi + (y-yi)/(yj-yi)*(xj-xi));
-      }
-      xs.sort((a,b)=>a-b);
-      for (let k=0;k+1<xs.length;k+=2){
-        const xa=Math.max(0,Math.round(xs[k])), xb=Math.min(w-1,Math.round(xs[k+1]));
-        for (let x=xa;x<=xb;x++) mask[y*w+x]=1;
-      }
-    }
-    return mask;
-  }
-
   /* ---------- raster acquisition: two sources, tried in order ---------- */
 
   // Eyedropper: sample #pdf-canvas's pixel color at a normalized page point.
@@ -303,7 +282,7 @@
     // Clip to the region polygon if active, otherwise the box interior.
     let clipMask;
     if (opts.regionLocalPts){
-      clipMask = rasterizePolyLocal(opts.regionLocalPts, localW, localH);
+      clipMask = RW._rasterizePolyLocal(opts.regionLocalPts, localW, localH);
     } else {
       clipMask = new Uint8Array(localW*localH);
       const { pad } = raster;
