@@ -41,7 +41,7 @@ done
 
 cat >> "$OUT" <<'FOOTER'
 
-  console.log('[RW] workbench ready (OCR variant): ' + __RW.regions.filter(r=>r.included).length + ' regions. Keys: P pick, K cut, B rect, N poly, J brush, A add, W walls, C pipe, L elbow, ` undo. In reference mode, an OCR button appears in the naming dialog.');
+  console.log('[RW] workbench ready (OCR variant): ' + __RW.regions.filter(r=>r.included).length + ' regions. Keys: P pick, K cut, B rect, N poly, J brush, A add, O walls, C pipe, L elbow, ` undo. In reference mode, an OCR button appears in the naming dialog.');
 })()
 FOOTER
 
