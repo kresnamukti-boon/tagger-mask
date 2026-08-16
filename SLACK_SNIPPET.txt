@@ -1,7 +1,0 @@
-Region Workbench — one-paste browser tool for annotation workflow
-
-File: console_loader.js
-Location: Unzip, open the .js file, copy everything (Ctrl+A, Ctrl+C)
-Usage: F12 → Console → paste → Enter → panel appears in right sidebar
-Re-paste: Each time you navigate to a new annotation page
-Safety: Nothing saves until you click the app's own Save button
