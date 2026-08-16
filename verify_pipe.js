@@ -246,7 +246,10 @@ function mkSeg(RW, ptsN, widthPx, opts){
   ok(RW._pipePts.length === 1, 'A: a point was placed');
   const [px, py] = RW._pipePts[0] || [NaN, NaN];
   approx(px, 0.6, 1e-6, 'A: pipe snap wins on x (not the closer wall hit)');
-  approx(py, 0.5, 1e-6, 'A: pipe snap wins on y (foot of perpendicular, not raw click y=0.512)');
+  // Center/left/right rails are all offered now, so the click (12px below
+  // center, 2px below the near edge rail at y=0.51) correctly snaps to that
+  // nearer rail rather than being forced onto the centerline.
+  approx(py, 0.51, 1e-6, 'A: pipe snap wins on y (nearest of the 3 rails, not raw click y=0.512)');
 }
 
 // Test B: RW._trySnap is still called exactly once per placement (side-effect check).
@@ -810,8 +813,9 @@ function runRemainingPipeTests(){
     // feed it back and confirm it is a real, branchable snap candidate
     RW._pipeNetwork = []; // commitPipe already reset this, restated for clarity
     const cands = RW._pipeSnapCandidates();
-    ok(cands.length === 1 && cands[0].src === 'annotation', 'U: the committed chain is a valid snap candidate');
-    approx(cands[0].widthPx, 10, 1e-6, 'U: candidate width parsed back correctly');
+    // 3 rails (center/left/right) per pipe now, all from the same annotation.
+    ok(cands.length === 3 && cands.every(c => c.src === 'annotation'), 'U: the committed chain is a valid snap candidate (3 rails, got ' + cands.length + ')');
+    ok(cands.every(c => Math.abs(c.widthPx - 10) < 1e-6), 'U: candidate width parsed back correctly on every rail');
     const p = RW._tryPipeSnap(0.4, 0.4); // its far end
     ok(RW._pipeSnapHit && RW._pipeSnapHit.targetEnd === 'end', 'U: the merged chain is branchable again (targetEnd end at its far tip)');
 
@@ -1031,8 +1035,352 @@ function runRasterEpsTests(){
     ok(barelySimplified.length > 300, 'X3: a too-tight tolerance leaves hundreds of points, matching what was actually observed (got ' + barelySimplified.length + ')');
   }
 
+  runAnchorAndDragTests();
+  runSnapRailsTests();
+}
+
+/* ================= Edge-anchored tracing (Feature B) ================= */
+function runAnchorAndDragTests(){
+  // Y1: RW._pipeAnchorOffsets sums to width for every anchor, and 'center'
+  // (or omitted) is byte-identical to today's original half/half behavior.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    for (const anchor of ['center','edgeA','edgeB',undefined]){
+      const [offL,offR] = RW._pipeAnchorOffsets(20, anchor);
+      approx(offL+offR, 20, 1e-9, 'Y1: offL+offR===width for anchor='+anchor);
+    }
+    const pts = [[0.1,0.1],[0.1,0.4],[0.4,0.4]];
+    const a = JSON.stringify(RW._pipeRibbon(pts, 10));
+    const b = JSON.stringify(RW._pipeRibbon(pts, 10, 'center'));
+    ok(a === b, 'Y1: omitted anchor is byte-identical to explicit \'center\'');
+  }
+
+  // Y2/Y3: edge-anchored ribbons still let the REAL, unmodified
+  // RW._pipeCenterlineFromRibbon recover the true geometric center — proven
+  // by cross-checking against the 'center' ribbon's own rails (built from
+  // the exact same per-vertex direction data, at width/2): edgeA (offR=0,
+  // offL=width) recovers click+dir*(width/2), matching the LEFT rail;
+  // edgeB (offL=0, offR=width) recovers click-dir*(width/2), matching the
+  // RIGHT rail — at a straight run, a 90 degree miter bend, and a near-180
+  // degree bevel join.
+  function checkEdgeRecovery(RW, pts, width, label){
+    const centerRibbon = RW._pipeRibbon(pts, width, 'center');
+    const k = centerRibbon.length/2;
+    const rails = {
+      edgeA: centerRibbon.slice(0,k),                 // left rail, original order
+      edgeB: centerRibbon.slice(k).reverse()           // right rail, original order (center = left.concat(right.reverse()))
+    };
+
+    for (const anchor of ['edgeA','edgeB']){
+      const edgeRibbon = RW._pipeRibbon(pts, width, anchor);
+      const recovered = RW._pipeCenterlineFromRibbon(edgeRibbon);
+      const expected = rails[anchor];
+      ok(recovered && recovered.length === k, label+' ('+anchor+'): recovered centerline has the right point count (got '+(recovered&&recovered.length)+', want '+k+')');
+      if (recovered && recovered.length === k){
+        let maxErr = 0;
+        for (let i=0;i<k;i++) maxErr = Math.max(maxErr, Math.hypot(recovered[i][0]-expected[i].x, recovered[i][1]-expected[i].y));
+        ok(maxErr < 1e-6, label+' ('+anchor+'): recovered centerline matches the true geometric center (max err '+maxErr+')');
+      }
+    }
+  }
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    checkEdgeRecovery(RW, [[0.1,0.1],[0.1,0.4]], 20, 'Y2: straight run');
+    checkEdgeRecovery(RW, [[0.0,0.0],[0.1,0.0],[0.1,0.1]], 20, 'Y3: 90-degree miter bend');
+    checkEdgeRecovery(RW, [[0.0,0.0],[0.1,0.0],[0.101,0.001]], 20, 'Y3b: near-180-degree bevel join');
+  }
+
+  // Y4: RW._pipeChainMerge requires uniform anchor across a chain, exactly
+  // like it already requires uniform width.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    const A = mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10, { }); A.anchor = 'center';
+    const B = mkSeg(RW, [[0.1,0.4],[0.4,0.4]], 10, { links:[0], linkStart:{ref:0,targetEnd:'end'} }); B.anchor = 'edgeA';
+    const res = RW._pipeChainMerge([A,B],[0,1]);
+    ok(res.error === 'mixed anchors', 'Y4: mismatched anchors disqualify the chain (got ' + res.error + ')');
+
+    B.anchor = 'center';
+    const res2 = RW._pipeChainMerge([A,B],[0,1]);
+    ok(!res2.error, 'Y4: matching anchors still chain (got error: ' + res2.error + ')');
+    ok(res2.meta.anchor === 'center', 'Y4: meta records the shared anchor');
+  }
+
+  /* ================= Draggable free endpoints (Feature A) ================= */
+
+  // Y5: RW._pipeEndpointIsFree — a genuinely free end, a segment's own
+  // linked end, and the two-directional case: an EARLIER segment's end that
+  // a LATER segment links onto (no reciprocal field on the earlier one).
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    RW._pipeNetwork = [
+      mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10), // segment 0: both ends currently free
+      mkSeg(RW, [[0.1,0.4],[0.4,0.4]], 10, { links:[0], linkStart:{ref:0,targetEnd:'end'} }) // segment 1: own start links to 0's end
+    ];
+    ok(RW._pipeEndpointIsFree(0,'start') === true, 'Y5: segment 0 start is genuinely free');
+    ok(RW._pipeEndpointIsFree(0,'end') === false, 'Y5: segment 0 end is a joint (a LATER segment links onto it, no reciprocal field on 0 itself)');
+    ok(RW._pipeEndpointIsFree(1,'start') === false, 'Y5: segment 1 start is a joint (it recorded the link itself)');
+    ok(RW._pipeEndpointIsFree(1,'end') === true, 'Y5: segment 1 end is genuinely free');
+  }
+
+  // Y6: DOM-driven drag on a free end updates that segment's ptsN/ribbon
+  // live and leaves every OTHER segment untouched.
+  {
+    const { win, RW, ac } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    const untouchedPts = [[0.6,0.6],[0.6,0.8]];
+    RW._pipeNetwork = [
+      mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10), // segment 0: end (0.1,0.4) is free -> draggable
+      mkSeg(RW, untouchedPts.map(p=>p.slice()), 10) // segment 1: untouched control
+    ];
+    const [hx,hy] = RW._toPx(0.1,0.4); // segment 0's free end, in container px
+    const clientX = hx + CONTAINER_RECT.x, clientY = hy + CONTAINER_RECT.y;
+    ac._fire('mousedown', { clientX, clientY });
+    ok(RW._pipeDragHandle === null, 'Y6: drag handle not armed yet on plain mousedown (only a real drag arms it)');
+    const clientX2 = clientX + 40, clientY2 = clientY + 40; // > 5px away -> a real drag
+    ac._fire('mousemove', { clientX: clientX2, clientY: clientY2 });
+    ok(RW._pipeDragHandle && RW._pipeDragHandle.segIdx === 0 && RW._pipeDragHandle.end === 'end',
+      'Y6: a real drag starting on the free end arms the handle (got ' + JSON.stringify(RW._pipeDragHandle) + ')');
+    const moved = RW._pipeNetwork[0].ptsN[1];
+    ok(Math.abs(moved[0]-0.1) > 1e-6 || Math.abs(moved[1]-0.4) > 1e-6, 'Y6: the dragged endpoint actually moved');
+    ok(RW._pipeNetwork[0].ribbon && RW._pipeNetwork[0].ribbon.length >= 4, 'Y6: the dragged segment\'s ribbon was rebuilt');
+    ok(JSON.stringify(RW._pipeNetwork[1].ptsN) === JSON.stringify(untouchedPts), 'Y6: the OTHER segment is completely untouched');
+    ac._fire('mouseup', { clientX: clientX2, clientY: clientY2 });
+    ok(RW._pipeDragHandle === null, 'Y6: mouseup clears the drag handle');
+  }
+
+  // Y7: a plain click (no real drag) on a free end falls through to the
+  // existing click-to-place behavior unchanged, rather than starting a drag.
+  {
+    const { win, RW, ac } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    RW._pipeNetwork = [ mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10) ];
+    const [hx,hy] = RW._toPx(0.1,0.4);
+    const clientX = hx + CONTAINER_RECT.x, clientY = hy + CONTAINER_RECT.y;
+    ac._fire('mousedown', { clientX, clientY });
+    ac._fire('mouseup', { clientX, clientY }); // no movement -> a plain click
+    ok(RW._pipeDragHandle === null, 'Y7: a plain click near a free end never arms a drag handle');
+    ok(RW._pipePts.length === 1, 'Y7: the plain click still places a new path point (existing behavior preserved)');
+    ok(RW._pipePendingLinks[0] && RW._pipePendingLinks[0].ref === 0 && RW._pipePendingLinks[0].targetEnd === 'end',
+      'Y7: it still snaps onto that same tip as a new branch, exactly as before this feature existed');
+  }
+
+  // Y8: a drag starting near a JOINT endpoint (already linked) never arms a
+  // drag handle at all — it's not even offered as a candidate.
+  {
+    const { win, RW, ac } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    RW._pipeNetwork = [
+      mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10),
+      mkSeg(RW, [[0.1,0.4],[0.4,0.4]], 10, { links:[0], linkStart:{ref:0,targetEnd:'end'} })
+    ];
+    const [hx,hy] = RW._toPx(0.1,0.4); // the joint shared by both segments
+    const clientX = hx + CONTAINER_RECT.x, clientY = hy + CONTAINER_RECT.y;
+    ac._fire('mousedown', { clientX, clientY });
+    ac._fire('mousemove', { clientX: clientX+40, clientY: clientY+40 });
+    ok(RW._pipeDragHandle === null, 'Y8: a drag starting on a joint never arms a drag handle');
+    ok(dragging_was_used_for_width_measure_or_click(RW), 'Y8: falls through to ordinary drag (width-measure) or click behavior instead');
+  }
+  function dragging_was_used_for_width_measure_or_click(RW){
+    // Either the width-measure drag path engaged (RW._pipeWidth may have
+    // changed) or a plain point got placed — either way, no crash, and the
+    // network segments are untouched other than possibly RW._pipeWidth.
+    return RW._pipeNetwork.length === 2
+      && JSON.stringify(RW._pipeNetwork[0].ptsN) === JSON.stringify([[0.1,0.1],[0.1,0.4]])
+      && JSON.stringify(RW._pipeNetwork[1].ptsN) === JSON.stringify([[0.1,0.4],[0.4,0.4]]);
+  }
+
+  // Y9: dragging too close to the segment's own neighboring point is
+  // refused — no collapse to a degenerate (near-zero-length) segment.
+  {
+    const { win, RW, ac } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    RW._pipeNetwork = [ mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10) ];
+    const [hx,hy] = RW._toPx(0.1,0.4);
+    const clientX = hx + CONTAINER_RECT.x, clientY = hy + CONTAINER_RECT.y;
+    ac._fire('mousedown', { clientX, clientY });
+    ac._fire('mousemove', { clientX: clientX+40, clientY: clientY+40 }); // arm the drag
+    // now drag it almost on top of its own neighbor point (0.1,0.1)
+    const [nx,ny] = RW._toPx(0.1,0.1);
+    ac._fire('mousemove', { clientX: nx + CONTAINER_RECT.x, clientY: ny + CONTAINER_RECT.y });
+    const pt = RW._pipeNetwork[0].ptsN[1];
+    ok(Math.hypot((pt[0]-0.1)*RW.W, (pt[1]-0.1)*RW.H) > 1, 'Y9: refuses to collapse the segment onto its own neighbor point');
+  }
+}
+
+/* ================= Snap candidates offer all 3 rails (Feature C) ================= */
+function runSnapRailsTests(){
+  // Z1: RW._pipeSnapCandidates() offers center/left/right for an uncommitted
+  // network segment, regardless of what anchor it was actually drawn with —
+  // previously an uncommitted segment only ever offered its raw ptsN (the
+  // centerline for a center anchor, but an EDGE for an edge anchor).
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    RW._pipeNetwork = [ mkSeg(RW, [[0.1,0.1],[0.1,0.4],[0.4,0.4]], 20) ];
+    const cands = RW._pipeSnapCandidates().filter(c => c.src === 'network' && c.ref === 0);
+    const rails = cands.map(c => c.rail).sort();
+    ok(JSON.stringify(rails) === JSON.stringify(['center','left','right']),
+      'Z1: a network segment offers exactly center/left/right (got ' + JSON.stringify(rails) + ')');
+  }
+
+  // Z2: same for an already-committed pipe-tagged annotation.
+  {
+    const { win: w0, RW: RW0 } = makeStubEnv();
+    loadModule(w0);
+    const ribbon = RW0._pipeRibbon([[0.1,0.1],[0.1,0.4]], 20);
+
+    const { win, RW } = makeStubEnv();
+    const as = { annotations: [{ id: 'A1', coordinates: ribbon, notes: 'pipe width: 20.00 px' }] };
+    loadModule(win, { annotationState: as });
+    const cands = RW._pipeSnapCandidates().filter(c => c.src === 'annotation' && c.ref === 'A1');
+    const rails = cands.map(c => c.rail).sort();
+    ok(JSON.stringify(rails) === JSON.stringify(['center','left','right']),
+      'Z2: a committed annotation offers exactly center/left/right (got ' + JSON.stringify(rails) + ')');
+  }
+
+  // Z3: the actual reported bug — an uncommitted EDGE-anchored segment now
+  // lets a click near the pipe's TRUE CENTER snap to the center rail, not
+  // just the raw edge it was originally drawn along.
+  {
+    const { win, RW, ac } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    // anchor:'edgeA' means offL=width, offR=0 — the click points ARE the
+    // right rail, and the true center sits offL/2 further toward the left
+    // (perp=[-1,0] for this vertical segment, so "left" is -x).
+    const ptsEdge = [[0.1,0.1],[0.1,0.4]];
+    const seg = mkSeg(RW, ptsEdge, 20);
+    seg.anchor = 'edgeA';
+    seg.ribbon = RW._pipeRibbon(ptsEdge, 20, 'edgeA');
+    RW._pipeNetwork = [ seg ];
+    const trueCenterX = 0.1 - 10/RW.W;
+    const hit = RW._tryPipeSnap(trueCenterX, 0.25);
+    approx(hit[0]*RW.W, trueCenterX*RW.W, 0.5, 'Z3: a click at the pipe\'s true center snaps onto the center rail, not the raw drawn edge (got x=' + hit[0] + ', want ' + trueCenterX + ')');
+  }
+
+  // Z4: targetEnd correctly identifies the pipe's real start/end regardless
+  // of which rail was actually hit (rank/position is computed per-candidate,
+  // not tied to one specific curve).
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    RW._pipeNetwork = [ mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 20) ];
+    const rails = RW._pipeSnapCandidates().filter(c => c.ref === 0);
+    for (const c of rails){
+      const [ex,ey] = c.ptsN[0]; // this rail's own start point
+      RW._tryPipeSnap(ex, ey);
+      ok(RW._pipeSnapHit && RW._pipeSnapHit.targetEnd === 'start',
+        'Z4: hitting the ' + c.rail + ' rail at its own start point reports targetEnd=start (got ' + (RW._pipeSnapHit && RW._pipeSnapHit.targetEnd) + ')');
+    }
+  }
+
+  // Z5: unaffected regression — a click landing exactly on a CENTER-anchored
+  // pipe's own centerline still snaps to that centerline (the center rail
+  // ties for closest and wins), matching pre-fix behavior exactly.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModule(win);
+    RW.pipeMode = true;
+    RW._pipeNetwork = [ mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 20) ];
+    const hit = RW._tryPipeSnap(0.1, 0.25);
+    approx(hit[0]*RW.W, 0.1*RW.W, 1e-6, 'Z5: a click on a center-anchored pipe\'s own centerline still snaps to x=0.1 unchanged');
+  }
+
+  runGapBridgeTests();
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
+}
+
+// A tee attaching to a pipe at an angle leaves its own flat ribbon cap
+// mismatched with the target's local direction — rasterizing the two
+// ribbons as-is can leave a small wedge covered by neither, worse for a
+// shallow approach angle or an edge-rail (rather than centerline) join.
+// RW._pipeExtendRibbonForMerge closes it by extending the tee-linked end
+// far enough (scaled by 1/sin(angle), bounded by RW._pipeGapSinFloor) to
+// genuinely cross the target's full width before rasterizing.
+function runGapBridgeTests(){
+  function pointInPoly(pt, poly){
+    let inside = false;
+    for (let i=0, j=poly.length-1; i<poly.length; j=i++){
+      const xi=poly[i].x, yi=poly[i].y, xj=poly[j].x, yj=poly[j].y;
+      const hit = ((yi>pt[1]) !== (yj>pt[1])) && (pt[0] < (xj-xi)*(pt[1]-yi)/(yj-yi)+xi);
+      if (hit) inside = !inside;
+    }
+    return inside;
+  }
+
+  // BB1: a shallow-angle tee onto a main pipe's edge leaves a real gap
+  // without the fix, and closes it with the fix — proven with a concrete
+  // probe point known (via direct grid search against the real shipped
+  // functions) to sit inside the notch: excluded from the un-bridged
+  // merge, included once bridging runs.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModuleWithCommit(win);
+    const W = RW.W, H = RW.H;
+    const main = mkSeg(RW, [[100/W,300/H],[600/W,300/H]], 20);
+    const branch = mkSeg(RW, [[300/W,290/H],[700/W,220/H]], 10, { links:[0], linkStart:{ref:0,targetEnd:null} });
+    RW._pipeNetwork = [main, branch];
+    const probe = [0.296, 0.2859]; // inside the notch, found via grid search
+
+    const origExt = RW._pipeExtendRibbonForMerge;
+    RW._pipeExtendRibbonForMerge = function(seg){ return seg.ribbon; }; // simulate pre-fix behavior
+    const before = RW._pipeMergeGroup([main, branch]);
+    RW._pipeExtendRibbonForMerge = origExt;
+    const after = RW._pipeMergeGroup([main, branch]);
+
+    ok(!before.error && !after.error, 'BB1: both merges succeed (before error: ' + before.error + ', after error: ' + after.error + ')');
+    ok(!pointInPoly(probe, before.poly), 'BB1: the probe point is genuinely excluded without bridging (real gap reproduced)');
+    ok(pointInPoly(probe, after.poly), 'BB1: the same probe point is included once RW._pipeExtendRibbonForMerge runs (gap bridged)');
+    ok(after.meta.pixels > before.meta.pixels, 'BB1: bridging strictly increases the rasterized area (before=' + before.meta.pixels + ', after=' + after.meta.pixels + ')');
+  }
+
+  // BB2: defensive fallback — an unresolvable target ref (RW._pipeNetwork
+  // doesn't contain it) never throws, and leaves the ribbon unchanged.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModuleWithCommit(win);
+    const seg = mkSeg(RW, [[0.3,0.3],[0.5,0.1]], 10, { links:[99], linkStart:{ref:99,targetEnd:null} });
+    RW._pipeNetwork = [seg]; // ref 99 doesn't exist
+    let ribbon;
+    ok((() => { ribbon = RW._pipeExtendRibbonForMerge(seg); return true; })(), 'BB2: an unresolvable target ref does not throw');
+    ok(JSON.stringify(ribbon) === JSON.stringify(seg.ribbon), 'BB2: falls back to the unmodified ribbon when the target cannot be resolved');
+  }
+
+  // BB3: a genuinely free segment (no linkStart/linkEnd at all) is never
+  // touched by the extension helper — byte-identical ribbon back.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModuleWithCommit(win);
+    const seg = mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10);
+    RW._pipeNetwork = [seg];
+    const ribbon = RW._pipeExtendRibbonForMerge(seg);
+    ok(ribbon === seg.ribbon, 'BB3: a free segment\'s ribbon is returned by reference, completely untouched');
+  }
+
+  // BB4: an end-to-end link (targetEnd 'start'/'end', not a mid-span tee)
+  // is left alone by the extension helper — that geometry is handled by
+  // the vector chain-merge path (or an unmodified raster fallback), not
+  // this tee-specific bridging.
+  {
+    const { win, RW } = makeStubEnv();
+    loadModuleWithCommit(win);
+    const main = mkSeg(RW, [[0.1,0.1],[0.1,0.4]], 10);
+    const branch = mkSeg(RW, [[0.1,0.4],[0.4,0.4]], 10, { links:[0], linkStart:{ref:0,targetEnd:'end'} });
+    RW._pipeNetwork = [main, branch];
+    const ribbon = RW._pipeExtendRibbonForMerge(branch);
+    ok(ribbon === branch.ribbon, 'BB4: an end-to-end (not mid-span) link is left completely unmodified');
+  }
 }
 
 // The exact ring from the live-found bug report (annotationState.annotations,
