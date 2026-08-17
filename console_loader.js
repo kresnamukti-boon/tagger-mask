@@ -3099,17 +3099,21 @@
     return { center: center, left: toPts(ribbon.slice(0, k)), right: toPts(ribbon.slice(k).reverse()) };
   };
 
-  // Every curve the current point may connect to: for each of this
-  // session's finished-but-unstaged segments and every already-committed
-  // pipe-tagged annotation (identified by the 'pipe width: ' notes prefix —
-  // the only existing marker, same 4-gate discipline every annotation
-  // reader in this codebase already uses), offers its centerline AND both
-  // edges as separate candidates — a click always snaps to whichever of the
-  // three is actually closest, regardless of what anchor the target pipe was
-  // originally drawn with (previously, an uncommitted segment only offered
-  // its raw clicked curve — its centerline for a center anchor, but an EDGE
-  // for an edge anchor — while a committed one always recovered the true
-  // center; that inconsistency is what this fixes). Excludes RW._pipePts.
+  // Every curve the current point may connect to, within this session's own
+  // finished-but-unstaged segments only — offers its centerline AND both
+  // edges as separate candidates, so a click always snaps to whichever of
+  // the three is actually closest regardless of what anchor the target pipe
+  // was drawn with. Excludes RW._pipePts.
+  //
+  // Deliberately does NOT scan already-committed annotations: that used to
+  // work by reading a 'pipe width: ' prefix out of the annotation's own
+  // `notes` field, but `notes` is a real field the host app displays in its
+  // own review UI (e.g. next to Tag) — stamping every committed pipe with
+  // internal bookkeeping text there leaked into what a reviewer sees. Notes
+  // is left untouched on commit now, which means a pipe saved in an earlier
+  // session can no longer be recognized as a snap target in a later one;
+  // same-session branching (still tracked via RW._pipeNetwork, never
+  // touching `notes`) is unaffected.
   RW._pipeSnapCandidates = function(){
     const out = [];
     const pushRails = (ribbon, widthPx, src, ref) => {
@@ -3122,15 +3126,6 @@
     for (let i=0;i<RW._pipeNetwork.length;i++){
       const s = RW._pipeNetwork[i];
       if (s && Array.isArray(s.ribbon)) pushRails(s.ribbon, s.widthPx, 'network', i);
-    }
-    if (typeof annotationState === 'undefined' || !annotationState || !annotationState.annotations) return out;
-    for (const a of annotationState.annotations){
-      if (a._hidden || a.is_void) continue;
-      const pts = a.coordinates; if (!Array.isArray(pts) || pts.length < 3) continue;
-      if (typeof a.notes !== 'string' || a.notes.indexOf('pipe width: ') !== 0) continue;
-      const m = /^pipe width:\s*([0-9.]+)/.exec(a.notes);
-      const w = m ? parseFloat(m[1]) : NaN;
-      pushRails(pts, (isFinite(w) && w>0) ? w : 0, 'annotation', a.id);
     }
     return out;
   };
@@ -3963,18 +3958,12 @@
         if (members.length > 1){
           const res = RW._pipeMergeConnected(members, g);
           if (res.poly){
-            let notes;
-            if (res.meta && res.meta.method === 'chain'){
-              // Same analyticPipeRibbon a lone pipe uses, so this stays a
-              // first-class, re-snappable pipe — ordinary prefix, not 'pipe run:'.
-              notes = 'pipe width: ' + res.meta.widthPx.toFixed(2) + ' px — '
-                + members.length + ' segments joined';
-            } else {
-              const widths = Array.from(new Set(members.map(s => +s.widthPx.toFixed(2)))).sort((a,b)=>a-b);
-              notes = 'pipe run: ' + members.length + ' segments merged, widths '
-                + widths.join(', ') + ' px — branched outline, centerline not recoverable';
-            }
-            created.push(RW._createPendingAnnotation(res.poly, notes));
+            // `notes` is a real field the host app shows in its own review
+            // UI (next to Tag), so it's left untouched — no more recording
+            // the measured width or merge history there. This does mean a
+            // committed pipe can no longer be recognized as a snap target
+            // in a later session; see RW._pipeSnapCandidates.
+            created.push(RW._createPendingAnnotation(res.poly));
             totalPts += res.poly.length;
             done += members.length; merged++; mergedOk = true;
             RW._commitStatus('staged '+done+'/'+total+' (failed: '+failed+')');
@@ -3989,7 +3978,7 @@
               RW._commitStatus('staged '+done+'/'+total+' (failed: '+failed+')');
               continue;
             }
-            created.push(RW._createPendingAnnotation(ribbon, 'pipe width: ' + seg.widthPx.toFixed(2) + ' px'));
+            created.push(RW._createPendingAnnotation(ribbon));
             totalPts += ribbon.length; done++;
             RW._commitStatus('staged '+done+'/'+total+' (failed: '+failed+')');
           }
@@ -5316,31 +5305,27 @@
     return ranked.map(function(r){ return {tag:r.tag, idx:r.idx}; });
   };
 
-  // Tags at list-index 0-9 are assumed to map to the app's own 1/2/.../9/0
-  // hotkeys in list order — unconfirmed, but if right, dispatching the digit
-  // goes through the app's real tag-selection code (same proven-safe idiom
-  // as the native-tool dispatch above).
+  // A digit-hotkey dispatch path was tried for the first 10 tags (assuming
+  // the app's own 1-9/0 hotkeys map to tags in the same order as the
+  // detected list) and was live-tested and found WRONG — a real job showed
+  // digit 1 selecting a different tag than the one shown at list-index 0.
+  // Removed; every tag selection now goes through the same direct-assignment
+  // path regardless of position, since that doesn't depend on any ordering
+  // assumption at all.
   RW._cmdSelectTag = function(tag, idx){
-    if (idx != null && idx < 10){
-      const digit = String((idx + 1) % 10);
-      RW._cmdDispatchAppKey(digit);
-      RW._commitStatus && RW._commitStatus('tag: ' + tag.name + ' (via digit ' + digit + ')');
-    } else {
-      RW._cmdSelectTagUnsafe(tag);
-    }
+    RW._cmdSelectTagUnsafe(tag);
   };
 
-  // UNVERIFIED — the one genuinely risky part of tag search. No known safe
-  // mechanism reaches a tag beyond the first 10 without live inspection of
-  // the app's own setter/reactive-state mechanism, so this directly assigns
-  // annotationState's current tag. If the app needs its own setter/dispatch
-  // to notice the change, this can silently desync the app's displayed tag
-  // from what's actually used on commit. Kept isolated and never called for
-  // an index <10 specifically so it's easy to find and replace once the
-  // real mechanism is confirmed live.
+  // The only tag-selection mechanism now (see above for why the digit path
+  // was removed, not just deprioritized). Directly assigns
+  // annotationState's current tag to the exact object matched by name. Not
+  // fully confirmed live: if the app needs its own setter/dispatch to
+  // notice the change rather than a plain property write, this can
+  // silently desync the app's displayed tag from what's actually used on
+  // commit.
   RW._cmdSelectTagUnsafe = function(tag){
     if (typeof annotationState !== 'undefined') annotationState.currentTag = tag;
-    RW._commitStatus && RW._commitStatus('tag: ' + tag.name + ' (direct assignment — unverified, confirm it actually applied)');
+    RW._commitStatus && RW._commitStatus('tag: ' + tag.name + ' (direct assignment — confirm it actually applied)');
   };
 
   /* ---------- matching ---------- */
@@ -5572,7 +5557,7 @@
       row.className = 'rw-cmd-item';
       let label, color;
       if (menuMode === 'tag'){
-        label = item.tag.name + (item.idx < 10 ? ' (' + ((item.idx + 1) % 10) + ')' : '');
+        label = item.tag.name; // no hotkey-number hint — that mapping was removed as confirmed wrong
         color = TAG_COLOR;
       } else {
         label = item.name + ((item.aliases && item.aliases.length) ? (' (' + item.aliases.join(',') + ')') : '');
@@ -5631,10 +5616,15 @@
       }
       return;
     }
-    if (e.key === 'Enter' || (e.key === ' ' && menuMode === 'command')){
-      // Space is AutoCAD's classic alternative to Enter for running a
-      // command — scoped to command mode only, since a tag name (unlike a
-      // command name) can legitimately contain a space to keep typing.
+    if (e.key === 'Enter' || e.key === ' '){
+      // Space is AutoCAD's classic alternative to Enter for confirming
+      // whatever's highlighted — commands and tags alike, per the user's
+      // own explicit choice. Always consumed (never falls through to a
+      // literal space), same as it already worked for commands. Accepted
+      // trade-off: once any tag matches (menuHighlight >= 0), Space
+      // confirms the top-ranked one immediately — so two tags sharing a
+      // first word (e.g. "Room A"/"Room B") can't be disambiguated by
+      // typing a space; use the arrow keys or keep typing without one.
       e.preventDefault(); e.stopPropagation();
       let item = null;
       if (menuHighlight >= 0 && menuItems[menuHighlight]) item = menuItems[menuHighlight];

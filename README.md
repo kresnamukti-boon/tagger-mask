@@ -95,9 +95,11 @@ command line): the first character you type auto-focuses the always-visible inpu
 the panel and seeds it, an autocomplete dropdown suggests matches as you keep typing (color-coded
 — light blue for a workbench command, light green for a native app tool), and Enter or **Space**
 (AutoCAD's own classic shortcut for running a command — a unique match also just works) arms the
-tool and pops its own controls up in a floating window. Space is only a shortcut for commands —
-while searching a tag (`#name`) it types a literal space instead, so a multi-word tag name still
-works; use Enter to confirm a tag. **Running an
+tool and pops its own controls up in a floating window. Space confirms the highlighted match in
+tag search (`#name`) too, same as Enter — accepted trade-off: if two tags share a first word
+(e.g. "Room A"/"Room B"), Space immediately picks whichever ranks first rather than letting you
+type a space to narrow further; use the arrow keys or keep typing without a space to disambiguate
+those. **Running an
 already-armed tool's command again turns it off** — typing `pipe` while Pipe is armed disarms it,
 same as the original single-key shortcuts worked as toggles. Utility keys that act on an
 already-armed tool are unchanged:
@@ -138,12 +140,13 @@ draw-mode-only tools — **not live-verified whether that's actually required**.
 **Tag search: type `#` followed by a tag name** (e.g. `#conference`) to search the app's full tag
 list, shown in the same dropdown color-coded in purple. The tag list is auto-detected from
 `annotationState` when the workbench loads — if detection fails, `#` search reports that in the
-status line rather than silently doing nothing. Selecting one of the first 10 tags dispatches the
-app's own 1-9/0 hotkey (assumed to match the tag's position in the detected list); selecting a
-tag beyond that falls back to directly assigning `annotationState.currentTag` — **not
-live-verified**, this is the one part of tag search that might not actually stick in the app's
-own UI, since it bypasses whatever setter the app may expect. Watch the status line after
-selecting: it always says which of the two mechanisms fired.
+status line rather than silently doing nothing. Selecting a tag directly assigns
+`annotationState.currentTag` to the exact match — this is the only mechanism now; an earlier
+version tried dispatching the app's own 1-9/0 hotkey for the first 10 tags (assuming hotkey order
+matched the detected list's order), but live use showed that mapping is wrong, so it was removed
+entirely. Direct assignment itself is still **not fully live-confirmed** — it bypasses whatever
+setter the app's own UI may expect, so watch the status line after selecting to confirm it
+actually took effect.
 
 ### Heal Interior (`rw_healinterior.js`)
 
@@ -196,15 +199,16 @@ lines, and fitting symbols, and no amount of pixel-analysis tuning fully survive
   drawing. `Backspace` drops the last point of the path you're currently drawing. `Escape` steps
   back one stage at a time: clears the in-progress path, then discards any finished-but-uncommitted
   segments, then exits Pipe mode.
-- **Branching/connecting**: click a point on or near an already-finished pipe (this session's, or
-  one already committed on the page) and it snaps onto that pipe — a white/magenta ring marks the
-  hit, with a cross for an end-to-end connection or a dot for a mid-span tee. Every pipe offers its
-  centerline **and both of its edges** as separate snap targets, regardless of what anchor it was
-  originally drawn with, so a click lands on whichever of the three is actually closest — click
-  near an edge to branch off that edge, or near the middle to branch off the centerline. This works
-  even before you've clicked Commit Pipe. This pipe-to-pipe snap is the *only* snap in Pipe mode
-  (see above) — it's what makes branching reliable without also picking up an unrelated wall or
-  region edge nearby.
+- **Branching/connecting**: click a point on or near an already-finished pipe **from this same
+  session** and it snaps onto that pipe — a white/magenta ring marks the hit, with a cross for an
+  end-to-end connection or a dot for a mid-span tee. Every pipe offers its centerline **and both
+  of its edges** as separate snap targets, regardless of what anchor it was originally drawn with,
+  so a click lands on whichever of the three is actually closest — click near an edge to branch
+  off that edge, or near the middle to branch off the centerline. This works even before you've
+  clicked Commit Pipe. This pipe-to-pipe snap is the *only* snap in Pipe mode (see above) — it's
+  what makes branching reliable without also picking up an unrelated wall or region edge nearby.
+  **Only unstaged, same-session pipes are snap targets** — a pipe already committed (from this
+  session or an earlier one) is never scanned for a snap hit; see "notes" below for why.
 - **Commit Pipe stages every finished segment from the session in one batch** — draw a main pipe
   plus any branches, then one click stages them (button label shows the resulting annotation
   count, e.g. `Commit 3 Pipes`). Each segment keeps the width it had when you finished it, so a
@@ -217,17 +221,13 @@ lines, and fitting symbols, and no amount of pixel-analysis tuning fully survive
   earlier action still snaps precisely but never rewrites that existing annotation. How the merge
   is built depends on the shape of the connection:
   - A **simple end-to-end chain** (every connection is tip-to-tip, no branch tee-ing onto another
-    segment's side) merges as a single continuous vector path — no rasterizing at all. Its notes
-    stay the ordinary `pipe width: 15.00 px — 3 segments joined` form, so — unlike a raster
-    merge — it's still a fully valid snap target in a future session, branchable exactly like a
-    plain unmerged pipe.
+    segment's side) merges as a single continuous vector path — no rasterizing at all.
   - Any **mid-span tee** (a branch attaching to the side of another pipe, not its tip) merges via
-    a raster-union-and-retrace instead. Its notes record the segment/width breakdown (`pipe run:
-    3 segments merged, widths 10.00, 12.00 px — branched outline, centerline not recoverable`) and
-    it can't be used as a snap target again in a future session. A tee attaching at an angle has
-    its connecting end automatically extended a bit before rasterizing, so the two shapes actually
-    overlap at the joint instead of leaving a small wedge-shaped gap — this happens on its own, no
-    button or setting to turn it on.
+    a raster-union-and-retrace instead. A tee attaching at an angle has its connecting end
+    automatically extended a bit before rasterizing, so the two shapes actually overlap at the
+    joint instead of leaving a small wedge-shaped gap — this happens on its own, no button or
+    setting to turn it on.
+  - Neither kind is ever snappable again once committed — see "notes" below.
 
   If a fitting's real linework is two separate strokes that don't actually connect after merging,
   the tool falls back to committing each segment separately rather than guessing.
@@ -250,13 +250,17 @@ lines, and fitting symbols, and no amount of pixel-analysis tuning fully survive
   **dedicated tool** instead (`L`, see "Elbow fitting" below), not a special vertex flag here. An
   earlier version of this tool had a middle-click-to-flag-an-elbow feature built in; it's been
   moved out, not deleted — see "Elbow fitting" below and `CLAUDE.md` for why.
-- The measured width is recorded in the pipe's own **notes** field (e.g. `pipe width: 15.00 px`)
-  — visible by selecting the annotation and checking its data panel. (An earlier version staged
-  a second small "dimension line" tick **annotation** alongside the ribbon for this at commit
-  time; live testing found it didn't read as a dimension line at all — just an unlabeled,
-  disconnected box — so it was dropped. The dimension line described above is different in kind:
-  a live-only overlay shown while you drag, never a committed shape. See `CLAUDE.md` for the full
-  account of both.)
+- The pipe's **notes** field is left empty on commit — it used to record the measured width there
+  (e.g. `pipe width: 15.00 px`), but that field turned out to be genuinely visible to annotators
+  in the app's own review UI, not a hidden internal marker, so nothing is written there anymore.
+  The width is still shown live while you drag (see the dimension line above) and in the panel
+  status line — just never persisted into the committed annotation's own notes. This also means a
+  committed pipe carries no marker identifying it as a pipe, which is why cross-session branching
+  is gone (see "Branching/connecting" above) — same-session branching via the in-progress network
+  needs no marker at all. (An earlier version staged a second small "dimension line" tick
+  **annotation** alongside the ribbon at commit time; live testing found it didn't read as a
+  dimension line at all — just an unlabeled, disconnected box — so it was dropped. See `CLAUDE.md`
+  for the full account.)
 - The `width` panel input shows real decimal precision (e.g. `0.63`), not rounded to a whole
   number — a genuinely sub-1px measurement no longer looks like the drag failed.
 - No undo for a committed pipe specifically (only pre-commit: Escape/Backspace both work) — to

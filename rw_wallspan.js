@@ -199,17 +199,21 @@
     return { center: center, left: toPts(ribbon.slice(0, k)), right: toPts(ribbon.slice(k).reverse()) };
   };
 
-  // Every curve the current point may connect to: for each of this
-  // session's finished-but-unstaged segments and every already-committed
-  // pipe-tagged annotation (identified by the 'pipe width: ' notes prefix —
-  // the only existing marker, same 4-gate discipline every annotation
-  // reader in this codebase already uses), offers its centerline AND both
-  // edges as separate candidates — a click always snaps to whichever of the
-  // three is actually closest, regardless of what anchor the target pipe was
-  // originally drawn with (previously, an uncommitted segment only offered
-  // its raw clicked curve — its centerline for a center anchor, but an EDGE
-  // for an edge anchor — while a committed one always recovered the true
-  // center; that inconsistency is what this fixes). Excludes RW._pipePts.
+  // Every curve the current point may connect to, within this session's own
+  // finished-but-unstaged segments only — offers its centerline AND both
+  // edges as separate candidates, so a click always snaps to whichever of
+  // the three is actually closest regardless of what anchor the target pipe
+  // was drawn with. Excludes RW._pipePts.
+  //
+  // Deliberately does NOT scan already-committed annotations: that used to
+  // work by reading a 'pipe width: ' prefix out of the annotation's own
+  // `notes` field, but `notes` is a real field the host app displays in its
+  // own review UI (e.g. next to Tag) — stamping every committed pipe with
+  // internal bookkeeping text there leaked into what a reviewer sees. Notes
+  // is left untouched on commit now, which means a pipe saved in an earlier
+  // session can no longer be recognized as a snap target in a later one;
+  // same-session branching (still tracked via RW._pipeNetwork, never
+  // touching `notes`) is unaffected.
   RW._pipeSnapCandidates = function(){
     const out = [];
     const pushRails = (ribbon, widthPx, src, ref) => {
@@ -222,15 +226,6 @@
     for (let i=0;i<RW._pipeNetwork.length;i++){
       const s = RW._pipeNetwork[i];
       if (s && Array.isArray(s.ribbon)) pushRails(s.ribbon, s.widthPx, 'network', i);
-    }
-    if (typeof annotationState === 'undefined' || !annotationState || !annotationState.annotations) return out;
-    for (const a of annotationState.annotations){
-      if (a._hidden || a.is_void) continue;
-      const pts = a.coordinates; if (!Array.isArray(pts) || pts.length < 3) continue;
-      if (typeof a.notes !== 'string' || a.notes.indexOf('pipe width: ') !== 0) continue;
-      const m = /^pipe width:\s*([0-9.]+)/.exec(a.notes);
-      const w = m ? parseFloat(m[1]) : NaN;
-      pushRails(pts, (isFinite(w) && w>0) ? w : 0, 'annotation', a.id);
     }
     return out;
   };
@@ -1063,18 +1058,12 @@
         if (members.length > 1){
           const res = RW._pipeMergeConnected(members, g);
           if (res.poly){
-            let notes;
-            if (res.meta && res.meta.method === 'chain'){
-              // Same analyticPipeRibbon a lone pipe uses, so this stays a
-              // first-class, re-snappable pipe — ordinary prefix, not 'pipe run:'.
-              notes = 'pipe width: ' + res.meta.widthPx.toFixed(2) + ' px — '
-                + members.length + ' segments joined';
-            } else {
-              const widths = Array.from(new Set(members.map(s => +s.widthPx.toFixed(2)))).sort((a,b)=>a-b);
-              notes = 'pipe run: ' + members.length + ' segments merged, widths '
-                + widths.join(', ') + ' px — branched outline, centerline not recoverable';
-            }
-            created.push(RW._createPendingAnnotation(res.poly, notes));
+            // `notes` is a real field the host app shows in its own review
+            // UI (next to Tag), so it's left untouched — no more recording
+            // the measured width or merge history there. This does mean a
+            // committed pipe can no longer be recognized as a snap target
+            // in a later session; see RW._pipeSnapCandidates.
+            created.push(RW._createPendingAnnotation(res.poly));
             totalPts += res.poly.length;
             done += members.length; merged++; mergedOk = true;
             RW._commitStatus('staged '+done+'/'+total+' (failed: '+failed+')');
@@ -1089,7 +1078,7 @@
               RW._commitStatus('staged '+done+'/'+total+' (failed: '+failed+')');
               continue;
             }
-            created.push(RW._createPendingAnnotation(ribbon, 'pipe width: ' + seg.widthPx.toFixed(2) + ' px'));
+            created.push(RW._createPendingAnnotation(ribbon));
             totalPts += ribbon.length; done++;
             RW._commitStatus('staged '+done+'/'+total+' (failed: '+failed+')');
           }

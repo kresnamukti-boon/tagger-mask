@@ -333,12 +333,16 @@ function mkSeg(RW, ptsN, widthPx, opts){
   ok(RW2._pipePendingLinks[0].targetEnd === null,
     'E: a mid-span hit on network[1] records targetEnd null (got ' + RW2._pipePendingLinks[0].targetEnd + ')');
 
-  // (2) snap onto the committed annotation's centerline — never linkable
+  // (2) a committed annotation is no longer a snap candidate at all (notes
+  // are left untouched on commit now, so there's no marker left to scan
+  // annotationState.annotations for) — a click on what used to be one now
+  // finds nothing and records no link, rather than hitting it as a
+  // never-linkable candidate.
   clientX = 800 + CONTAINER_RECT.x; clientY = 200 + CONTAINER_RECT.y;
   ac2._fire('mousedown', { clientX, clientY });
   ac2._fire('mouseup', { clientX, clientY });
-  ok(RW2._pipeSnapHit && RW2._pipeSnapHit.src === 'annotation', 'E: second click actually hit the annotation candidate');
-  ok(RW2._pipePendingLinks[1] === null, 'E: snapping onto a committed annotation records no link');
+  ok(!RW2._pipeSnapHit, 'E: a committed annotation is no longer recognized as a snap candidate');
+  ok(RW2._pipePendingLinks[1] === null, 'E: no link is recorded for a miss');
 
   // (3) no hit at all -> null link
   clientX = 50 + CONTAINER_RECT.x; clientY = 900 + CONTAINER_RECT.y;
@@ -788,13 +792,18 @@ function withRasterSpy(RW, fn){
   RW.commitPipe().then(() => {
     const as = RW._testAnnotationState;
     ok(as.annotations.length === 2, 'T: both methods failing stages each member individually (got ' + as.annotations.length + ')');
-    ok(as.annotations.every(a => a.notes.indexOf('pipe width: ') === 0), 'T: each individually-staged pipe has the ordinary notes prefix');
+    ok(as.annotations.every(a => !a.notes), 'T: notes stays untouched (empty) on every individually-staged pipe');
     runRemainingPipeTests();
   });
 }
 
 function runRemainingPipeTests(){
-  // Test U: notes / re-snappability — the headline test.
+  // Test U: notes stays untouched on commit, and a committed pipe is no
+  // longer recognized as a snap candidate at all — `notes` is a real field
+  // the host app displays in its own review UI, so this codebase no longer
+  // writes anything into it, which means cross-session pipe snapping (via
+  // scanning annotationState.annotations for a notes marker) is gone by
+  // design; same-session branching via RW._pipeNetwork is unaffected.
   (async () => {
     const { win, RW } = makeStubEnv();
     loadModule(win);
@@ -806,25 +815,13 @@ function runRemainingPipeTests(){
     const as = RW._testAnnotationState;
     ok(as.annotations.length === 1, 'U: chain commit stages exactly one annotation (got ' + as.annotations.length + ')');
     const a = as.annotations[0];
-    ok(a && a.notes.indexOf('pipe width: ') === 0, 'U: notes start with the ordinary pipe width prefix (got "' + (a&&a.notes) + '")');
-    ok(/^pipe width:\s*([0-9.]+)/.test(a.notes) && RegExp.$1 === '10.00', 'U: notes parse back to the shared width');
-    ok(a.notes.indexOf('segments joined') !== -1, 'U: notes mention the segment count');
+    ok(a && !a.notes, 'U: notes is left empty/untouched (got "' + (a && a.notes) + '")');
 
-    // feed it back and confirm it is a real, branchable snap candidate
-    RW._pipeNetwork = []; // commitPipe already reset this, restated for clarity
+    // feed it back — no longer a snap candidate under any circumstance,
+    // chain-merged or raster-merged alike, since nothing marks it as a pipe.
+    RW._pipeNetwork = [];
     const cands = RW._pipeSnapCandidates();
-    // 3 rails (center/left/right) per pipe now, all from the same annotation.
-    ok(cands.length === 3 && cands.every(c => c.src === 'annotation'), 'U: the committed chain is a valid snap candidate (3 rails, got ' + cands.length + ')');
-    ok(cands.every(c => Math.abs(c.widthPx - 10) < 1e-6), 'U: candidate width parsed back correctly on every rail');
-    const p = RW._tryPipeSnap(0.4, 0.4); // its far end
-    ok(RW._pipeSnapHit && RW._pipeSnapHit.targetEnd === 'end', 'U: the merged chain is branchable again (targetEnd end at its far tip)');
-
-    // negative control: a raster-merged 'pipe run:' annotation is NOT a candidate
-    const as2 = { annotations: [{ id:'x', coordinates: RW._pipeRibbon([[0.5,0.5],[0.5,0.7]],10), notes: 'pipe run: 2 segments merged, widths 10.00 px — branched outline, centerline not recoverable' }], currentTag:{id:1,name:'Pipe'} };
-    const { win: win2, RW: RW2 } = makeStubEnv();
-    loadModule(win2, { annotationState: as2 });
-    const cands2 = RW2._pipeSnapCandidates();
-    ok(cands2.length === 0, 'U: a raster-merged "pipe run:" annotation is NOT a snap candidate');
+    ok(cands.length === 0, 'U: a committed annotation is never a snap candidate anymore (got ' + cands.length + ')');
 
     runTraceEqualsCommit();
   })();
@@ -1231,7 +1228,10 @@ function runSnapRailsTests(){
       'Z1: a network segment offers exactly center/left/right (got ' + JSON.stringify(rails) + ')');
   }
 
-  // Z2: same for an already-committed pipe-tagged annotation.
+  // Z2: an already-committed pipe-tagged annotation offers NO rails at all —
+  // notes is never written on commit anymore (it's a real field the host app
+  // displays in its own review UI), so there's nothing left to scan
+  // annotationState.annotations for; cross-session pipe snapping is gone.
   {
     const { win: w0, RW: RW0 } = makeStubEnv();
     loadModule(w0);
@@ -1241,9 +1241,7 @@ function runSnapRailsTests(){
     const as = { annotations: [{ id: 'A1', coordinates: ribbon, notes: 'pipe width: 20.00 px' }] };
     loadModule(win, { annotationState: as });
     const cands = RW._pipeSnapCandidates().filter(c => c.src === 'annotation' && c.ref === 'A1');
-    const rails = cands.map(c => c.rail).sort();
-    ok(JSON.stringify(rails) === JSON.stringify(['center','left','right']),
-      'Z2: a committed annotation offers exactly center/left/right (got ' + JSON.stringify(rails) + ')');
+    ok(cands.length === 0, 'Z2: a committed annotation offers no rails at all (got ' + cands.length + ')');
   }
 
   // Z3: the actual reported bug — an uncommitted EDGE-anchored segment now
