@@ -621,6 +621,22 @@ function loadModule(win, annotationState){
     ok(as.currentTag === null, 'Space in tag mode never selects a tag as a side effect');
   }
 
+  /* ---------- 26. the master RW: ON/OFF killswitch also stops global auto-capture ---------- */
+  {
+    const { win, byId, doc } = makeStubWindow();
+    loadModule(win);
+    const RW = win.__RW;
+    RW.enabled = false;
+    const bodyTarget = makeElement('div', byId);
+    doc._fire('keydown', { target: bodyTarget, key: 'p' });
+    ok(byId['rw-cmd-input'].value === '',
+       'RW.enabled=false stops the command line from capturing keystrokes, closing the earlier gap');
+
+    RW.enabled = true;
+    doc._fire('keydown', { target: bodyTarget, key: 'p' });
+    ok(byId['rw-cmd-input'].value === 'p', 'auto-capture resumes once RW is enabled again');
+  }
+
   finish();
 })();
 

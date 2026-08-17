@@ -527,6 +527,7 @@
   // (Escape, or click the canvas).
   document.addEventListener('keydown', function(e){
     if (e.__rwSynthetic) return; // our own dispatch to the app (RW._cmdDispatchAppKey) — never eat it
+    if (!RW.enabled) return; // respect the master RW: ON/OFF killswitch, same as every other tool
     const t = e.target;
     if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.ctrlKey||e.metaKey||e.altKey) return;

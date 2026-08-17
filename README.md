@@ -111,7 +111,9 @@ already-armed tool are unchanged:
 
 **Because typing is captured from anywhere, it takes over the host app's own single-key
 shortcuts while you're mid-command** — to press an app shortcut key directly again, blur the
-command input first (Escape, or click the canvas).
+command input first (Escape, or click the canvas). **To turn the command line off entirely**,
+use the panel's own **RW: ON/OFF** killswitch — it stops the global typing-capture along with
+every other workbench listener.
 
 Workbench command vocabulary (name — aliases): `pick` (`p`), `cut` (`k`), `rect` (`r`,`b`),
 `poly2` (`poly`,`n`), `brush` (`j`), `heal` (`h`), `healbrush` (`hb`), `pipe` (`c`), `elbow`
