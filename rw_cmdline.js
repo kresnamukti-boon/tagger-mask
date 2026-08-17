@@ -148,31 +148,27 @@
     return ranked.map(function(r){ return {tag:r.tag, idx:r.idx}; });
   };
 
-  // Tags at list-index 0-9 are assumed to map to the app's own 1/2/.../9/0
-  // hotkeys in list order — unconfirmed, but if right, dispatching the digit
-  // goes through the app's real tag-selection code (same proven-safe idiom
-  // as the native-tool dispatch above).
+  // A digit-hotkey dispatch path was tried for the first 10 tags (assuming
+  // the app's own 1-9/0 hotkeys map to tags in the same order as the
+  // detected list) and was live-tested and found WRONG — a real job showed
+  // digit 1 selecting a different tag than the one shown at list-index 0.
+  // Removed; every tag selection now goes through the same direct-assignment
+  // path regardless of position, since that doesn't depend on any ordering
+  // assumption at all.
   RW._cmdSelectTag = function(tag, idx){
-    if (idx != null && idx < 10){
-      const digit = String((idx + 1) % 10);
-      RW._cmdDispatchAppKey(digit);
-      RW._commitStatus && RW._commitStatus('tag: ' + tag.name + ' (via digit ' + digit + ')');
-    } else {
-      RW._cmdSelectTagUnsafe(tag);
-    }
+    RW._cmdSelectTagUnsafe(tag);
   };
 
-  // UNVERIFIED — the one genuinely risky part of tag search. No known safe
-  // mechanism reaches a tag beyond the first 10 without live inspection of
-  // the app's own setter/reactive-state mechanism, so this directly assigns
-  // annotationState's current tag. If the app needs its own setter/dispatch
-  // to notice the change, this can silently desync the app's displayed tag
-  // from what's actually used on commit. Kept isolated and never called for
-  // an index <10 specifically so it's easy to find and replace once the
-  // real mechanism is confirmed live.
+  // The only tag-selection mechanism now (see above for why the digit path
+  // was removed, not just deprioritized). Directly assigns
+  // annotationState's current tag to the exact object matched by name. Not
+  // fully confirmed live: if the app needs its own setter/dispatch to
+  // notice the change rather than a plain property write, this can
+  // silently desync the app's displayed tag from what's actually used on
+  // commit.
   RW._cmdSelectTagUnsafe = function(tag){
     if (typeof annotationState !== 'undefined') annotationState.currentTag = tag;
-    RW._commitStatus && RW._commitStatus('tag: ' + tag.name + ' (direct assignment — unverified, confirm it actually applied)');
+    RW._commitStatus && RW._commitStatus('tag: ' + tag.name + ' (direct assignment — confirm it actually applied)');
   };
 
   /* ---------- matching ---------- */
@@ -404,7 +400,7 @@
       row.className = 'rw-cmd-item';
       let label, color;
       if (menuMode === 'tag'){
-        label = item.tag.name + (item.idx < 10 ? ' (' + ((item.idx + 1) % 10) + ')' : '');
+        label = item.tag.name; // no hotkey-number hint — that mapping was removed as confirmed wrong
         color = TAG_COLOR;
       } else {
         label = item.name + ((item.aliases && item.aliases.length) ? (' (' + item.aliases.join(',') + ')') : '');
@@ -463,10 +459,15 @@
       }
       return;
     }
-    if (e.key === 'Enter' || (e.key === ' ' && menuMode === 'command')){
-      // Space is AutoCAD's classic alternative to Enter for running a
-      // command — scoped to command mode only, since a tag name (unlike a
-      // command name) can legitimately contain a space to keep typing.
+    if (e.key === 'Enter' || e.key === ' '){
+      // Space is AutoCAD's classic alternative to Enter for confirming
+      // whatever's highlighted — commands and tags alike, per the user's
+      // own explicit choice. Always consumed (never falls through to a
+      // literal space), same as it already worked for commands. Accepted
+      // trade-off: once any tag matches (menuHighlight >= 0), Space
+      // confirms the top-ranked one immediately — so two tags sharing a
+      // first word (e.g. "Room A"/"Room B") can't be disambiguated by
+      // typing a space; use the arrow keys or keep typing without one.
       e.preventDefault(); e.stopPropagation();
       let item = null;
       if (menuHighlight >= 0 && menuItems[menuHighlight]) item = menuItems[menuHighlight];

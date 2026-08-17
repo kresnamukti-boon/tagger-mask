@@ -564,7 +564,10 @@ function loadModule(win, annotationState){
     ok(cmdRows.some(r => r.innerText.indexOf('pipe') === 0), 'a plain (non-#) query still searches commands');
   }
 
-  /* ---------- 22. selecting a tag at index <10 dispatches the matching digit, not a direct assignment ---------- */
+  /* ---------- 22. tag selection always uses direct assignment now, regardless of position ---------- */
+  // The digit-hotkey path (assuming list-index maps to the app's 1-9/0 keys)
+  // was live-tested and found wrong — a real job showed digit 1 selecting a
+  // different tag than the one at index 0 — and was removed entirely.
   {
     const { win } = makeStubWindow();
     const as = { currentTag: null, tags: [{id:1,name:'Alpha'},{id:2,name:'Beta'},{id:3,name:'Gamma'}] };
@@ -572,12 +575,12 @@ function loadModule(win, annotationState){
     const RW = win.__RW;
     const keys = [];
     RW._cmdDispatchAppKey = function(k){ keys.push(k); };
-    RW._cmdSelectTag(as.tags[2], 2); // 3rd tag, index 2 -> digit '3'
-    ok(JSON.stringify(keys) === JSON.stringify(['3']), 'index 2 dispatches digit "3"');
-    ok(as.currentTag === null, 'the safe digit path never touches annotationState.currentTag directly');
+    RW._cmdSelectTag(as.tags[2], 2); // 3rd tag, index 2 — well within the old "digit" range
+    ok(keys.length === 0, 'index 2 never dispatches a digit — the digit path no longer exists');
+    ok(as.currentTag === as.tags[2], 'index 2 goes straight to direct assignment of the exact matched tag');
   }
 
-  /* ---------- 23. selecting a tag at index >=10 goes through the unsafe direct-assignment path only ---------- */
+  /* ---------- 23. selecting a tag at index >=10 also uses direct assignment (no position-based branch left) ---------- */
   {
     const { win } = makeStubWindow();
     const manyTags = [];
@@ -587,10 +590,11 @@ function loadModule(win, annotationState){
     const RW = win.__RW;
     const keys = [];
     RW._cmdDispatchAppKey = function(k){ keys.push(k); };
-    RW._cmdSelectTag(manyTags[11], 11); // index 11, beyond the first 10
+    RW._cmdSelectTag(manyTags[11], 11); // index 11, beyond the old first-10 range
     ok(keys.length === 0, 'index 11 never goes through the digit-dispatch path');
-    ok(as.currentTag === manyTags[11], 'index 11 falls back to direct assignment of annotationState.currentTag');
-    ok(RW._lastStatus.indexOf('unverified') !== -1, 'the unsafe path\'s status explicitly says so, not just "tag selected"');
+    ok(as.currentTag === manyTags[11], 'index 11 uses direct assignment of annotationState.currentTag');
+    ok(RW._lastStatus.indexOf('confirm it actually applied') !== -1,
+       'the status still flags this as not fully confirmed, just without contrasting it against a "safe" alternative that no longer exists');
   }
 
   /* ---------- 24. Space acts as Enter in command mode ---------- */
@@ -607,18 +611,31 @@ function loadModule(win, annotationState){
     ok(defaultPrevented, 'Space is consumed (preventDefault) when it triggers a command');
   }
 
-  /* ---------- 25. Space is a literal character in tag-search mode, never triggers selection ---------- */
+  /* ---------- 25. Space also confirms the highlighted tag, same as Enter ---------- */
   {
     const { win, byId } = makeStubWindow();
     const as = { currentTag: null, tags: [{id:1,name:'Alpha Room'}] };
     loadModule(win, as);
     const inp = byId['rw-cmd-input'];
     inp.value = '#alpha';
-    inp.dispatchEvent({ type: 'input' });
+    inp.dispatchEvent({ type: 'input' }); // highlights "Alpha Room" at index 0
     let defaultPrevented = false;
     inp._fire('keydown', { key: ' ', preventDefault(){ defaultPrevented = true; } });
-    ok(!defaultPrevented, 'Space in tag-search mode is left alone, so a multi-word tag name can be typed');
-    ok(as.currentTag === null, 'Space in tag mode never selects a tag as a side effect');
+    ok(defaultPrevented, 'Space is consumed once a tag is highlighted');
+    ok(as.currentTag === as.tags[0], 'Space confirms the highlighted tag via direct assignment, same as Enter would');
+  }
+
+  /* ---------- 25b. accepted trade-off: Space can't disambiguate two tags sharing a first word ---------- */
+  {
+    const { win, byId } = makeStubWindow();
+    const as = { currentTag: null, tags: [{id:1,name:'Room A'},{id:2,name:'Room B'}] };
+    loadModule(win, as);
+    const inp = byId['rw-cmd-input'];
+    inp.value = '#room'; // both match; "Room A" ranks first and is highlighted
+    inp.dispatchEvent({ type: 'input' });
+    inp._fire('keydown', { key: ' ', preventDefault(){} });
+    ok(as.currentTag === as.tags[0],
+       'Space immediately confirms the top-ranked match ("Room A") rather than typing a space to narrow further — the accepted trade-off');
   }
 
   /* ---------- 26. the master RW: ON/OFF killswitch also stops global auto-capture ---------- */
