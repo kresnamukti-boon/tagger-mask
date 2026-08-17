@@ -169,6 +169,8 @@
 
   // Escape clears normalized state too
   document.addEventListener('keydown', function(e){
+    const t=e.target;
+    if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.key==='Escape' && RW.maskMode){
       RW._polyPtsN=[]; RW.__rectStartN=null; RW.__rectCurN=null;
     }

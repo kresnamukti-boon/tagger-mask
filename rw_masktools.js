@@ -238,17 +238,6 @@
     const t=e.target;
     if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.ctrlKey||e.metaKey||e.altKey) return;
-    // Disarm v2.6 tools first.
-    if (e.key==='b'||e.key==='B'){
-      if (RW.maskMode2){ RW.setMaskMode2(null); }
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (e.shiftKey){ const next=RW.maskAction==='block'?'open':RW.maskAction==='open'?'add':'block'; RW.maskAction=next; RW._syncRectBtn(); return; }
-      RW.maskMode = RW.maskMode==='rect' ? null : 'rect';
-      RW._syncRectBtn();
-      const ac=document.getElementById('annotation-canvas');
-      ac.style.cursor = RW.maskMode==='rect' ? 'crosshair' : '';
-      if (RW.maskMode!=='rect'){ RW.__rectStartN=null; RW.__rectCurN=null; const rl=document.getElementById('rw-rectline'); if(rl) rl.remove(); }
-    }
     if (e.key==='Escape' && RW.maskMode==='rect'){
       e.preventDefault(); e.stopImmediatePropagation();
       RW.maskMode=null; RW.__rectStartN=null; RW.__rectCurN=null;
@@ -263,14 +252,14 @@
     const b = document.getElementById('rw-rect');
     if (!b) return;
     const sym = RW.maskAction==='block' ? '-' : (RW.maskAction==='open' ? '+' : '⊕');
-    b.innerText = 'Rect '+sym+' (B)';
+    b.innerText = 'Rect '+sym;
     const bg = RW.maskAction==='add' ? 'rgba(50,205,50,0.4)' : 'rgba(255,160,60,0.4)';
     b.style.background = RW.maskMode==='rect' ? bg : '';
   };
   const bar = (document.getElementById('rw-pick') || {}).parentNode;
   if (bar && !document.getElementById('rw-rect')){
     const b=document.createElement('button');
-    b.id='rw-rect'; b.title='Unified rect mask. Shift+B cycles block→open→add.';
+    b.id='rw-rect'; b.title='Unified rect mask. Cycle its action via the "cycle" command.';
     b.style.cssText='font-size:11px;padding:2px 6px;';
     b.onclick=()=>{
       // cross-disarm: if any v2.6 tool is armed, kill it first
@@ -372,29 +361,16 @@
     document.getElementById('pdf-container').appendChild(ov);
   };
 
-  /* ---------- O key: toggle wall overlay ---------- */
-  // O, not W — the app's own native keymap already binds W to its bounding-box
-  // tool; O (for "overlay") avoids that collision entirely.
-  window.addEventListener('keydown', function(e){
-    const t = e.target;
-    if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
-    if (e.ctrlKey||e.metaKey||e.altKey) return;
-    if (e.key==='o'||e.key==='O'){
-      e.preventDefault(); e.stopImmediatePropagation();
-      RW.toggleWallOverlay();
-    }
-  }, true);
-
   /* ---------- Walls panel button ---------- */
   if (bar && !document.getElementById('rw-walls')){
     const wb = document.createElement('button');
     wb.id = 'rw-walls';
-    wb.title = 'Toggle wall overlay (O). Shows wall=1 pixels in red.';
+    wb.title = 'Toggle wall overlay. Shows wall=1 pixels in red.';
     wb.style.cssText = 'font-size:11px;padding:2px 6px;';
-    wb.innerText = 'Walls (O)';
+    wb.innerText = 'Walls';
     wb.onclick = ()=>RW.toggleWallOverlay();
     bar.appendChild(wb);
   }
 
-  return 'v2.1r unified rect up: B=rect (Shift+B toggles block/open), pan-stable';
+  return 'v2.1r unified rect up: pan-stable';
 })()

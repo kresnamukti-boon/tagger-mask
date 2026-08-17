@@ -129,9 +129,9 @@
     panel.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>Region Workbench</b><span id="rw-count" style="opacity:0.7"></span></div>' +
       '<div style="margin-bottom:6px;display:flex;gap:4px;flex-wrap:wrap;">' +
-      '<button id="rw-pick" style="font-size:11px;padding:2px 6px;">Pick (P)</button>' +
+      '<button id="rw-pick" style="font-size:11px;padding:2px 6px;">Pick</button>' +
       '<button id="rw-merge" style="font-size:11px;padding:2px 6px;">Merge</button>' +
-      '<button id="rw-cut" style="font-size:11px;padding:2px 6px;">Cut (K)</button>' +
+      '<button id="rw-cut" style="font-size:11px;padding:2px 6px;">Cut</button>' +
       '<button id="rw-commit" style="font-size:11px;padding:2px 6px;">Commit</button>' +
       '<button id="rw-refresh" style="font-size:11px;padding:2px 6px;">Re-extract</button>' +
       '<button id="rw-hide" style="font-size:11px;padding:2px 6px;">Hide</button>' +
@@ -395,8 +395,6 @@
     const t=e.target;
     if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.ctrlKey||e.metaKey||e.altKey) return;
-    if (e.key==='p'||e.key==='P'){ e.preventDefault(); e.stopPropagation(); RW.setPick(!RW.pickMode); }
-    if (e.key==='k'||e.key==='K'){ e.preventDefault(); e.stopPropagation(); RW.setCut(true); }
     if ((e.key==='Delete'||e.key==='Backspace') && RW.pickMode && RW.selected.size){
       e.preventDefault(); e.stopImmediatePropagation();
       for (const sv of RW.selected){
