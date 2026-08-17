@@ -31,7 +31,7 @@ HEADER
 FIRST=1
 # Same order as build_loader.sh, with rw_ocr.js appended last — it only
 # needs RW to exist as a namespace, not any specific module's internals.
-for f in rw_panelux.js rw_install.js rw_masktools.js rw_stable.js rw_undo.js rw_commit.js rw_brushpoly.js rw_healinterior.js rw_snap.js rw_textdetect.js rw_wallspan.js rw_panelsections.js rw_elbow.js rw_cmdline.js rw_ocr.js; do
+for f in rw_panelux.js rw_install.js rw_masktools.js rw_stable.js rw_undo.js rw_commit.js rw_brushpoly.js rw_healinterior.js rw_snap.js rw_textdetect.js rw_wallspan.js rw_panelsections.js rw_elbow.js rw_ocr.js; do
   if [ $FIRST -eq 0 ]; then printf ';\n' >> "$OUT"; fi
   FIRST=0
   echo "// ===== $f =====" >> "$OUT"
@@ -41,7 +41,7 @@ done
 
 cat >> "$OUT" <<'FOOTER'
 
-  console.log('[RW] workbench ready (OCR variant): ' + __RW.regions.filter(r=>r.included).length + ' regions. Type a tool name into the command line (or press / to focus it) to arm a tool; ` undo, Escape cancel. In reference mode, an OCR button appears in the naming dialog.');
+  console.log('[RW] workbench ready (OCR variant): ' + __RW.regions.filter(r=>r.included).length + ' regions. P=Pick K=Cut B=Rect N=Poly2 J=Brush A=Add O=Walls C=Pipe L=Elbow; ` undo, Escape cancel. In reference mode, an OCR button appears in the naming dialog.');
 })()
 FOOTER
 

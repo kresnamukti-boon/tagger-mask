@@ -1,8 +1,8 @@
 // RW v2.6 — Poly (dual-action) + Brush mask tools.
 // Load AFTER rw_undo.js (needs v2.3). Adds:
-//   Poly2 tool: freeform vertices, dbl-click closes.
-//   Brush tool: freehand stroke, Tab+scroll sizes radius.
-//   Add mode / action cycle (block → open → add), armed via the panel or the command line.
+//   N  — Poly2 tool: freeform vertices, dbl-click closes. Shift+N toggles block/open.
+//   J  — Brush tool: freehand stroke, Tab+scroll sizes radius. Shift+J toggles block/open.
+//   A  — Cycle maskAction: block → open → add (creates new regions from drawn shapes).
 (function(){
   const RW = window.__RW;
   if (!RW || !RW.v23) return 'need v2.3 first';
@@ -39,14 +39,14 @@
   RW._syncToolButtons = function(){
     const label = RW._actionLabel();
     const pb = document.getElementById('rw-poly2');
-    if (pb) pb.innerText = 'Poly2 ' + label;
+    if (pb) pb.innerText = 'Poly2 ' + label + ' (N)';
     if (pb) pb.style.background = RW.maskMode2==='poly2' ? 'rgba(255,160,60,0.4)' : '';
     const bb = document.getElementById('rw-brush');
-    if (bb) bb.innerText = 'Brush ' + label;
+    if (bb) bb.innerText = 'Brush ' + label + ' (J)';
     if (bb) bb.style.background = RW.maskMode2==='brush' ? 'rgba(255,160,60,0.4)' : '';
     const ab = document.getElementById('rw-addmode');
     if (ab){
-      ab.innerText = 'Add ' + label;
+      ab.innerText = 'Add ' + label + ' (A)';
       ab.style.background = RW.maskAction==='add' ? 'rgba(50,205,50,0.45)' : '';
     }
   };
@@ -319,6 +319,30 @@
     const t=e.target;
     if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.ctrlKey||e.metaKey||e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k==='a'){
+      e.preventDefault(); e.stopImmediatePropagation();
+      RW.setMaskAction(RW.maskAction==='add' ? 'block' : 'add');
+      return;
+    }
+    if (k==='n'){
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.shiftKey){ const next=RW.maskAction==='block'?'open':RW.maskAction==='open'?'add':'block'; RW.setMaskAction(next); return; }
+      if (RW.maskMode==='rect'){ RW.maskMode=null; RW.__rectStartN=null; RW.__rectCurN=null;
+        document.getElementById('annotation-canvas').style.cursor='';
+        const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
+        RW._syncRectBtn(); }
+      RW.setMaskMode2(RW.maskMode2==='poly2' ? null : 'poly2');
+    }
+    if (k==='j'){
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.shiftKey){ const next=RW.maskAction==='block'?'open':RW.maskAction==='open'?'add':'block'; RW.setMaskAction(next); return; }
+      if (RW.maskMode==='rect'){ RW.maskMode=null; RW.__rectStartN=null; RW.__rectCurN=null;
+        document.getElementById('annotation-canvas').style.cursor='';
+        const rl=document.getElementById('rw-rectline'); if(rl) rl.remove();
+        RW._syncRectBtn(); }
+      RW.setMaskMode2(RW.maskMode2==='brush' ? null : 'brush');
+    }
     if (e.key==='Escape' && RW.maskMode2){
       e.preventDefault(); e.stopImmediatePropagation();
       if (RW.maskMode2==='poly2' && RW._polyPtsN && RW._polyPtsN.length){
@@ -348,12 +372,12 @@
     bar.appendChild(b);
     return b;
   }
-  const pb = addBtn('rw-poly2','Freeform mask: click vertices, double-click closes.');
+  const pb = addBtn('rw-poly2','Freeform mask: click vertices, double-click closes. Shift+N toggles mode.');
   if (pb) pb.onclick=()=>RW.setMaskMode2(RW.maskMode2==='poly2'?null:'poly2');
-  const bb = addBtn('rw-brush','Freehand mask stroke. Tab+scroll resizes.');
+  const bb = addBtn('rw-brush','Freehand mask stroke. Tab+scroll resizes. Shift+J toggles mode.');
   if (bb) bb.onclick=()=>RW.setMaskMode2(RW.maskMode2==='brush'?null:'brush');
   const ab = document.createElement('button');
-  ab.id='rw-addmode'; ab.title='Toggle Add Region mode.';
+  ab.id='rw-addmode'; ab.title='Toggle Add Region mode. A key also toggles.';
   ab.style.cssText='font-size:11px;padding:2px 6px;';
   ab.onclick=()=>{
     RW.setMaskAction(RW.maskAction==='add' ? 'block' : 'add');
@@ -361,5 +385,5 @@
   bar.appendChild(ab);
   RW._syncToolButtons();
 
-  return 'v2.6 up: Poly2 + Brush + Add';
+  return 'v2.6 up: Poly2 (N) + Brush (J) + Add (A)';
 })()

@@ -883,6 +883,16 @@
     }
   }, true);
 
+  window.addEventListener('keydown', function(e){
+    const t = e.target;
+    if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
+    if (e.ctrlKey||e.metaKey||e.altKey) return;
+    if (e.key==='c'||e.key==='C'){
+      e.preventDefault(); e.stopImmediatePropagation();
+      RW.setPipeMode(!RW.pipeMode);
+    }
+  }, true);
+
   /* ---------- preview rendering ---------- */
   function polyPx(ribbon){
     return ribbon.map(p => { const [px,py]=RW._toPx(p.x,p.y); return px+','+py; }).join(' ');
@@ -1171,7 +1181,7 @@
     b.id = 'rw-pipe';
     b.title = 'Click points along a pipe\'s centerline (double-click to finish); drag anywhere to measure a fixed width off the drawing. Double-click finishes a segment and immediately starts the next — click on or near an existing pipe (white/magenta ring) to connect to it: a cross means end-to-end, a dot means a tee onto its side. Shift bypasses snapping. Escape: clear the path -> discard pending segments -> exit.';
     b.style.cssText = 'font-size:11px;padding:2px 6px;';
-    b.innerText = 'Pipe';
+    b.innerText = 'Pipe (C)';
     b.onclick = () => RW.setPipeMode(!RW.pipeMode);
     group.appendChild(b);
 

@@ -15,12 +15,17 @@ so annotators who don't need it stay on a smaller, fully offline script.
 Each module is a versioned IIFE gated on the previous module's version flag, so this order is
 load-bearing, not cosmetic. `console_loader.js` concatenates all of them, in order.
 
+> This repo is the region/mask/annotation workbench only. The AutoCAD-style command line for
+> the host app's own native tools now lives in the sibling repo `boon-command-line` (under
+> `~/Projects/boon-projects/`) — this build restores the original single-key tool shortcuts
+> the command line used to replace, and does not include it.
+
 1. **rw_panelux.js** — loads first, before anything else exists. Collapsible panel UI, and the
    **RW: ON/OFF** master killswitch that gates every handler the later modules register.
 2. **rw_install.js** — core region engine. Flood-fills the drawing canvas into wall/background,
    labels enclosed areas as candidate regions, region list panel, **Pick** mode, **Merge**/**Cut**.
 3. **rw_masktools.js** — unified **Rect** mask tool (block/open/add, see below), the global area
-   floor input + **Relabel** button, the **Walls** diagnostic overlay, live area hint while
+   floor input + **Relabel** button, the **Walls (O)** diagnostic overlay, live area hint while
    dragging.
 4. **rw_stable.js** — pan/zoom-stable preview rendering; no user-facing controls of its own.
 5. **rw_undo.js** — snapshot undo stack (backtick) shared by every mask edit, plus poly vertex
@@ -31,13 +36,13 @@ load-bearing, not cosmetic. `console_loader.js` concatenates all of them, in ord
 7. **rw_healinterior.js** — **Heal Interior?** / **Apply Heal** / **Edit Heal (Brush)** for
    cleaning text/hatch noise out of a selected region before committing it (see below).
 8. **rw_brushpoly.js** — **Poly2** (freeform vertex) and **Brush** (freehand stroke) mask tools;
-   owns the **Add ⊕** toggle.
+   owns the **Add ⊕ (A)** toggle.
 9. **rw_snap.js** — Poly2 vertex snapping to line endpoints/junctions and region outlines (see
    below); **Snap On/Off** panel toggle.
 10. **rw_textdetect.js** — **Text? (density)** whole-page detection-only overlay (see below).
     Currently hidden in the panel along with **Relabel** and **Add ⊕** (not removed — see
     "Hidden controls" below).
-11. **rw_wallspan.js** — **Pipe** / **Trace** / **Commit Pipe** for annotating piping
+11. **rw_wallspan.js** — **Pipe (C)** / **Trace** / **Commit Pipe** for annotating piping
     centerlines as a fixed-width path (see below) — deliberately doesn't trace pixels, since the
     rest of the toolset only handles enclosed areas and pixel-tracing a pipe's actual linework
     turned out to be too fragile against text/fittings crossing the line.
@@ -45,14 +50,10 @@ load-bearing, not cosmetic. `console_loader.js` concatenates all of them, in ord
     HEAL / PIPE / FITTINGS / VIEW) by relocating every earlier module's controls by id; purely
     cosmetic, no tool behavior changes. Must load after every module above (so their controls
     already exist to move) and before **rw_elbow.js** (so it can mount into the FITTINGS section).
-13. **rw_elbow.js** — **Elbow** / **Commit Elbow** for annotating elbow pipe fittings: drag a
+13. **rw_elbow.js** — **Elbow (L)** / **Commit Elbow** for annotating elbow pipe fittings: drag a
     box (or click-click-click + double-click a tighter polygon region) around the fitting and it
     traces the real drawn linework inside it (see below).
-14. **rw_cmdline.js** — the always-visible command-line input (see "Keymap (workbench)" below):
-    type a tool's name/alias, autocomplete suggests matches, running one clicks that tool's real
-    panel button and opens a floating popup with its controls, borrowed from the panel and
-    returned on close/disarm. Replaces the tool-arming single-key shortcuts.
-15. **rw_ocr.js** — *OCR loader variant only, not in `console_loader.js`.* Adds an OCR button to
+14. **rw_ocr.js** — *OCR loader variant only, not in `console_loader.js`.* Adds an OCR button to
     the app's own reference-naming dialog (see "OCR-assisted reference naming" below).
 
 **To rebuild** after editing any `rw_*.js` source module:
@@ -78,75 +79,35 @@ Working in reference mode (`?mode=reference`) and want OCR-assisted naming? Past
 
 Every mask tool shares one 3-state action, shown as a symbol on its button (`−`/`+`/`⊕`):
 
-| State | Effect |
-|---|---|
-| **block** (default) | paint wall — add a split inside an existing enclosed area |
-| **open** | erase wall — heal a false split |
-| **add** | carve a brand-new region out of empty whitespace |
+| State | Effect | Key |
+|---|---|---|
+| **block** (default) | paint wall — add a split inside an existing enclosed area | — |
+| **open** | erase wall — heal a false split | — |
+| **add** | carve a brand-new region out of empty whitespace | `A` toggles block↔add |
 
-The `addmode` command toggles block↔add for whichever tool is armed; the `cycle` command steps
-through all three states (block → open → add → block).
+`Shift+B` / `Shift+N` / `Shift+J` cycle all three states (block → open → add → block) for
+Rect/Poly2/Brush respectively.
 
 ## Keymap (workbench)
 
-Every tool is armed via the command line (`rw_cmdline.js`) instead of a dedicated letter key —
-**just start typing a tool's name from anywhere**, no click or focus step needed (like AutoCAD's
-command line): the first character you type auto-focuses the always-visible input at the top of
-the panel and seeds it, an autocomplete dropdown suggests matches as you keep typing (color-coded
-— light blue for a workbench command, light green for a native app tool), and Enter or **Space**
-(AutoCAD's own classic shortcut for running a command — a unique match also just works) arms the
-tool and pops its own controls up in a floating window. Space confirms the highlighted match in
-tag search (`#name`) too, same as Enter — accepted trade-off: if two tags share a first word
-(e.g. "Room A"/"Room B"), Space immediately picks whichever ranks first rather than letting you
-type a space to narrow further; use the arrow keys or keep typing without a space to disambiguate
-those. **Running an
-already-armed tool's command again turns it off** — typing `pipe` while Pipe is armed disarms it,
-same as the original single-key shortcuts worked as toggles. Utility keys that act on an
-already-armed tool are unchanged:
-
 | Key | Action |
 |---|---|
+| `P` | toggle Pick mode (click regions on canvas to select) |
+| `K` | Cut mode (drag a line across a region to split it) — **shadows the app's own Magic Wand**, see below |
+| `B` | Rect mask mode (drag to paint/erase/add, per current action state) |
+| `N` | Poly2 mask mode (click vertices, double-click to close, Backspace removes last vertex) |
+| `J` | Brush mask mode (freehand stroke) |
+| `A` | toggle Add mode on/off for Rect/Poly2/Brush |
+| `Shift+B` / `Shift+N` / `Shift+J` | cycle block → open → add for that tool |
+| `O` | cycle the wall diagnostic overlay (red wall → cyan floodable space → off) |
 | Shift (hold, placing a Poly2 vertex) | bypass vertex snap for that click |
 | `` ` `` (backtick) | undo last mask edit (block/open/poly/brush/cut/merge/heal) |
-| `Escape` | cancel current workbench mode / clear in-progress poly vertices, or blur the command input |
+| `Escape` | cancel current workbench mode / clear in-progress poly vertices |
+| `C` | Pipe mode — click a path along a pipe's centerline (see Pipe annotation below) |
+| `L` | Elbow mode — drag a box, or click points + double-click to close a tighter region, around an elbow fitting (see Elbow fitting below) |
 | `Tab` (hold, Brush/Heal Brush armed) | scroll to resize the brush radius |
 
-**Because typing is captured from anywhere, it takes over the host app's own single-key
-shortcuts while you're mid-command** — to press an app shortcut key directly again, blur the
-command input first (Escape, or click the canvas). **To turn the command line off entirely**,
-use the panel's own **RW: ON/OFF** killswitch — it stops the global typing-capture along with
-every other workbench listener.
-
-Workbench command vocabulary (name — aliases): `pick` (`p`), `cut` (`k`), `rect` (`r`,`b`),
-`poly2` (`poly`,`n`), `brush` (`j`), `heal` (`h`), `healbrush` (`hb`), `pipe` (`c`), `elbow`
-(`el`,`l`), `walls` (`wall`,`o`), `snap` (`s`), `text` (`density`), `addmode` (`add`,`a`),
-`relabel`, `cycle` (`action` — cycles the current mask action block→open→add, replacing the old
-`Shift+B/N/J`).
-
-Merge/Commit/Re-extract/Hide have no command-line entry yet — still click their panel buttons.
-
-**Native app tool vocabulary** (dispatched to the host app itself, not this workbench — see "App
-built-in keymap" below for what each one does): draw-mode tools `linear` (`q`), `bbox` (`w`),
-`count` (`e`), `polygon` (no alias — `r` already belongs to the workbench's `rect`), `polyline`
-(`t`), `circle` (`y`), `cloud` (`u`), `wand` (no alias — `k` already belongs to `cut`), `wrap`
-(`x`), `void` (`v`), `tag1`-`tag9`/`tag0` (digits); mode switches `pan` (no alias — `a` already
-belongs to `addmode`), `select` (no alias — `s` already belongs to `snap`), `draw` (`d`), `label`
-(`f`), `crop` (`g`), `mirror` (`m`). Where a native tool's own app-keymap letter collides with an
-already-shipped workbench command, the workbench command keeps the letter and the native tool is
-reachable only by typing more of its name. Draw-mode tool commands dispatch a defensive `d`
-(enter draw mode) immediately before their own letter, since the app's keymap documents them as
-draw-mode-only tools — **not live-verified whether that's actually required**.
-
-**Tag search: type `#` followed by a tag name** (e.g. `#conference`) to search the app's full tag
-list, shown in the same dropdown color-coded in purple. The tag list is auto-detected from
-`annotationState` when the workbench loads — if detection fails, `#` search reports that in the
-status line rather than silently doing nothing. Selecting a tag directly assigns
-`annotationState.currentTag` to the exact match — this is the only mechanism now; an earlier
-version tried dispatching the app's own 1-9/0 hotkey for the first 10 tags (assuming hotkey order
-matched the detected list's order), but live use showed that mapping is wrong, so it was removed
-entirely. Direct assignment itself is still **not fully live-confirmed** — it bypasses whatever
-setter the app's own UI may expect, so watch the status line after selecting to confirm it
-actually took effect.
+Merge has no hotkey (app uses `M` for mirror) — select 2+ regions, click **Merge** in panel.
 
 ### Heal Interior (`rw_healinterior.js`)
 
@@ -277,7 +238,7 @@ A dedicated tool for annotating elbow pipe fittings — separate from the Pipe t
 plain bend in a pipe's path stays a plain mitered corner, and only an elbow you actually box gets
 special handling.
 
-- Type **`elbow`** (or `el`/`l`) into the command line to arm the tool, then either **drag a box**
+- Press **`L`** (or click **Elbow** in the panel) to arm the tool, then either **drag a box**
   around the elbow fitting (a real drag,
   not a click — same 5px threshold every other drag tool uses), or **click a series of points and
   double-click to close** a tighter polygon region — useful when a rectangle would inevitably
@@ -346,30 +307,30 @@ no tool's behavior changes because of it.
 ### Hidden controls
 
 **Relabel**, **Add ⊕**, and **Text? (density)** are currently hidden in the panel (not removed
-— the underlying features still work, and are reachable via the command line's `relabel`/
-`addmode`/`text` entries) since they weren't useful for current annotation work. Ask if you want
-any of these visible again.
+— the underlying features still work) since they weren't useful for current annotation work. Ask
+if you want any of these visible again.
 
 ## App built-in keymap (reference, extracted from their JS)
 
 Modes: A pan, S select, D draw, F label, G crop, M mirror
 Tools (draw mode): Q linear, W bounding box, E count, R polygon, T polyline, Y circle, U revision cloud
 K magic wand (tolerance/detail sliders), X wrap, V void mode, 1-9/0 tag select+draw, Space temp pan
+P ribbon (click points along a centerline, drag to measure width — discovered live on a real job;
+not otherwise verified against every job, see `boon-command-line`'s own history)
 Ctrl/Cmd +/-/0 zoom, Ctrl+scroll zoom
 Ctrl+Z undo, Ctrl+Shift+Z / Ctrl+Y redo
 Delete/Backspace delete selected, Ctrl+C/V copy/paste, Ctrl+Shift+V mirror paste
 Double-click finishes polygon/polyline
 Arrows nudge selection 1px, Shift+arrows 10px
 
-**Historical note:** the workbench used to bind Cut mode to **K** and the wall overlay to **O**
-directly, and briefly had to route around the resulting collision with the app's own **K = Magic
-Wand** shortcut (the workbench's capture-phase, `stopPropagation()`-calling listener fully
-shadowed it). Tools are now armed via the command line instead of single letter keys, so that
-*specific* collision is gone — but the command line's own global auto-capture (see "Keymap
-(workbench)" above) means the app's native single-key shortcuts are unreachable directly while
-you're mid-command anyway; blur the command input (Escape, or click the canvas) to use one
-directly. The app's shortcuts are only "unaffected" in the sense that nothing in the workbench
-permanently disables them the way the old K/W collisions did.
+**Keybindings can shadow the app's own shortcuts.** The workbench's own keydown handlers run in
+the capture phase with `stopPropagation()`, so they fire before — and fully block — the app's
+own handler for the same key while a tool is armed or a listener is otherwise live. Known
+collisions with this build's restored keys: **`K`** shadows the app's own **Magic Wand**; **`A`**
+shadows the app's own **pan** mode switch; **`P`** shadows the app's own **Ribbon** tool (see
+above). None of these are resolved — this is the state the workbench
+shipped in for its entire history before the (now-removed) command-line activator briefly
+replaced these single-key shortcuts; see `boon-command-line`'s own history for that chapter.
 
 ## Boundaries
 
