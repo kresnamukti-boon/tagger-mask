@@ -580,16 +580,6 @@
     }
   }, true);
 
-  window.addEventListener('keydown', function(e){
-    const t = e.target;
-    if (t && (t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
-    if (e.ctrlKey||e.metaKey||e.altKey) return;
-    if (e.key==='l'||e.key==='L'){
-      e.preventDefault(); e.stopImmediatePropagation();
-      RW.setElbowMode(!RW.elbowMode);
-    }
-  }, true);
-
   /* ---------- preview rendering ---------- */
   RW._renderElbowRect = function(aN, bN){
     const svg = RW._mkSvg('rw-elbow-rect', 71);
@@ -746,7 +736,7 @@
     b.id = 'rw-elbow';
     b.title = 'Drag a box (or click points + double-click to close a tighter region) around an elbow fitting; traces the real linework inside it into a polygon that hugs the fitting (curve + any side stub). Once drawn, drag any corner/vertex to reshape it live. Escape backs out one step at a time.';
     b.style.cssText = 'font-size:11px;padding:2px 6px;';
-    b.innerText = 'Elbow (L)';
+    b.innerText = 'Elbow';
     b.onclick = () => RW.setElbowMode(!RW.elbowMode);
     sec.appendChild(b);
 
@@ -870,5 +860,5 @@
     };
   }
 
-  return 'v3.2 up: Elbow fitting — drag a box (L), traces the real fitting inside it, Commit Elbow';
+  return 'v3.2 up: Elbow fitting — drag a box, traces the real fitting inside it, Commit Elbow';
 })()

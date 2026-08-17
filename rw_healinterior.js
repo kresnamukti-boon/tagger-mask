@@ -384,6 +384,8 @@
   }, {capture:true, passive:false});
 
   window.addEventListener('keydown', function(e){
+    const t=e.target;
+    if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (e.key==='Tab' && RW.healBrushMode){
       RW.__tabHeld = true;
       e.preventDefault(); e.stopImmediatePropagation();

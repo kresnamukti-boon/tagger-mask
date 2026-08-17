@@ -205,6 +205,8 @@
   }
 
   document.addEventListener('keydown', function(e){
+    const t=e.target;
+    if (t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable)) return;
     if (!RW._ocrBoxDrawing) return;
     if (e.key === 'Escape'){
       e.stopPropagation(); e.preventDefault();
