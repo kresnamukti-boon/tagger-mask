@@ -36,6 +36,10 @@ function makeElement(tag){
     className: '',
     hidden: false,
     value: '',
+    selectionStart: null,
+    selectionEnd: null,
+    focus(){},
+    setSelectionRange(s, e){ this.selectionStart = s; this.selectionEnd = e; },
     innerText: '',
     textContent: '',
     title: '',
@@ -281,31 +285,57 @@ function loadModule(win){
 }
 
 // ---- 7. full recognize flow, Tesseract already present ----
+// Recognized text is inserted at the caret (or replaces a selection), never overwrites
+// the whole field, so existing typed/OCR'd text isn't lost.
 {
   const { win } = makeStubWindow();
   loadModule(win);
   const RW = win.__RW;
   win.Tesseract = { recognize: async () => ({ data: { text: 'A\n3-201\nDETAIL\n|' } }) };
 
-  const nameInp = makeElement('input');
-  nameInp.value = 'old value';
-  let inputEventFired = false;
-  nameInp.addEventListener('input', () => { inputEventFired = true; });
-  const status = makeElement('span');
-
   const pdf = makeElement('canvas');
   pdf.width = 400; pdf.height = 200;
   win.document._byId['pdf-canvas'] = pdf;
-
   RW._ocrLastBoxN = { x0: 0, y0: 0, x1: 1, y1: 1 };
 
-  RW._ocrRunDetect(nameInp, status).then(() => {
-    ok(nameInp.value === 'DETAIL', 'recognized longest line written into the field');
-    ok(inputEventFired === true, 'a real input event was dispatched');
-    ok(RW._ocrLastLines.length === 4, 'RW._ocrLastLines retains every recognized line');
-    ok(status.textContent.indexOf('DETAIL') !== -1, 'status line shows the chosen text');
+  (async () => {
+    // 7a. caret mid-field -> inserted at the caret, text on both sides preserved
+    {
+      const nameInp = makeElement('input');
+      nameInp.value = 'old value';
+      nameInp.selectionStart = 4;
+      nameInp.selectionEnd = 4;
+      let inputEventFired = false;
+      nameInp.addEventListener('input', () => { inputEventFired = true; });
+      const status = makeElement('span');
+      await RW._ocrRunDetect(nameInp, status);
+      ok(nameInp.value === 'old DETAILvalue', '7a: recognized text inserted at the caret, not overwriting the field');
+      ok(nameInp.selectionStart === 10 && nameInp.selectionEnd === 10, '7a: caret moved to just after the inserted text');
+      ok(inputEventFired === true, '7a: a real input event was dispatched');
+      ok(RW._ocrLastLines.length === 4, '7a: RW._ocrLastLines retains every recognized line');
+      ok(status.textContent.indexOf('DETAIL') !== -1, '7a: status line shows the chosen text');
+    }
+
+    // 7b. an actual selection -> replaced by the recognized text
+    {
+      const nameInp = makeElement('input');
+      nameInp.value = 'old value';
+      nameInp.selectionStart = 4;
+      nameInp.selectionEnd = 9; // selects "value"
+      await RW._ocrRunDetect(nameInp, makeElement('span'));
+      ok(nameInp.value === 'old DETAIL', '7b: selected text replaced by the recognized text');
+    }
+
+    // 7c. no selection info available (e.g. an input type without selection support) -> appended
+    {
+      const nameInp = makeElement('input');
+      nameInp.value = 'old value'; // selectionStart/selectionEnd stay at the stub default of null
+      await RW._ocrRunDetect(nameInp, makeElement('span'));
+      ok(nameInp.value === 'old valueDETAIL', '7c: falls back to appending when selection info is unavailable');
+    }
+
     runRemainingTests();
-  }).catch(e => { fail++; console.error('FAIL: recognize flow threw', e); runRemainingTests(); });
+  })().catch(e => { fail++; console.error('FAIL: recognize flow threw', e); runRemainingTests(); });
 }
 
 function runRemainingTests(){

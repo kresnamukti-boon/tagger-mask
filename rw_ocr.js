@@ -377,7 +377,19 @@
       return;
     }
 
-    nameInp.value = longest;
+    // Insert at the caret (replacing any selection) rather than overwriting the whole field,
+    // so existing typed/OCR'd text isn't lost.
+    const hasSelection = typeof nameInp.selectionStart === 'number' && typeof nameInp.selectionEnd === 'number';
+    const start = hasSelection ? nameInp.selectionStart : nameInp.value.length;
+    const end = hasSelection ? nameInp.selectionEnd : nameInp.value.length;
+    const before = nameInp.value.slice(0, start);
+    const after = nameInp.value.slice(end);
+    nameInp.value = before + longest + after;
+    if (hasSelection){
+      const caret = start + longest.length;
+      nameInp.focus();
+      nameInp.setSelectionRange(caret, caret);
+    }
     nameInp.dispatchEvent(new Event('input', { bubbles: true }));
     setStatus(lines.length > 1 ? ('"' + longest + '" (' + lines.length + ' lines read)') : ('"' + longest + '"'));
   };
